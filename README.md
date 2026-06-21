@@ -60,4 +60,5 @@ You can find your notify services in Home Assistant Developer Tools.
 - A Home Assistant admin user is required for admin actions.
 - Child users only see their own kid view and the house-mission view.
 - Dashboard users see the shared dashboard.
+- The Home Assistant integration domain is `chore_quest` for compatibility, so service names and the install folder use `chore_quest` even though the app is branded SideQuest.
 - Existing data is kept in Home Assistant storage under the `chore_quest` domain.
