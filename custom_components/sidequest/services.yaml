@@ -1,0 +1,264 @@
+claim_chore:
+  fields:
+    chore_id:
+      required: true
+      selector:
+        text:
+    quantity:
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+
+approve_chore:
+  fields:
+    chore_id:
+      required: true
+      selector:
+        text:
+    rating:
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+
+deny_chore:
+  fields:
+    chore_id:
+      required: true
+      selector:
+        text:
+
+add_child:
+  fields:
+    name:
+      required: true
+      selector:
+        text:
+    user_ids:
+      selector:
+        text:
+    goal:
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.5
+
+delete_child:
+  fields:
+    child_id:
+      required: true
+      selector:
+        text:
+
+upsert_chore:
+  fields:
+    id:
+      selector:
+        text:
+    child_id:
+      required: true
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    icon:
+      selector:
+        icon:
+    description:
+      selector:
+        text:
+          multiline: true
+    reward:
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+    badges:
+      selector:
+        text:
+    xp:
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 1
+    tasks:
+      selector:
+        object:
+    enabled:
+      selector:
+        boolean:
+    approval_required:
+      selector:
+        boolean:
+    repeat_mode:
+      selector:
+        select:
+          options:
+            - once_per_day
+            - once_per_week
+            - unlimited
+    quantity_enabled:
+      selector:
+        boolean:
+    quantity_label:
+      selector:
+        text:
+    schedule:
+      selector:
+        object:
+
+delete_chore:
+  fields:
+    chore_id:
+      required: true
+      selector:
+        text:
+
+upsert_global_mission:
+  fields:
+    id:
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    icon:
+      selector:
+        icon:
+    description:
+      selector:
+        text:
+    badges:
+      selector:
+        text:
+    xp:
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 1
+    enabled:
+      selector:
+        boolean:
+    done:
+      selector:
+        boolean:
+
+delete_global_mission:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+
+complete_global_mission:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+    child_id:
+      selector:
+        text:
+
+claim_global_task:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+    task_id:
+      required: true
+      selector:
+        text:
+    child_id:
+      required: true
+      selector:
+        text:
+
+approve_global_task:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+    task_id:
+      required: true
+      selector:
+        text:
+
+deny_global_task:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+    task_id:
+      required: true
+      selector:
+        text:
+
+save_global_mission_template:
+  fields:
+    mission_id:
+      required: true
+      selector:
+        text:
+
+launch_global_mission_template:
+  fields:
+    template_id:
+      required: true
+      selector:
+        text:
+
+delete_global_mission_template:
+  fields:
+    template_id:
+      required: true
+      selector:
+        text:
+
+adjust_money:
+  fields:
+    child_id:
+      required: true
+      selector:
+        text:
+    amount:
+      required: true
+      selector:
+        number:
+          min: -100
+          max: 100
+          step: 0.1
+    note:
+      selector:
+        text:
+
+delete_history_event:
+  fields:
+    event_id:
+      required: true
+      selector:
+        text:
+
+update_settings:
+  fields:
+    kitchen_user_ids:
+      selector:
+        text:
+    notify_targets:
+      selector:
+        text:
+
+weekly_reset:
