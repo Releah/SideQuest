@@ -1,0 +1,16 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SideQuest",
+        "description": "Set up SideQuest. Notification targets are optional and should be comma-separated notify service names.",
+        "data": {
+          "notify_targets": "Parent notification targets"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "SideQuest is already configured."
+    }
+  }
+}
