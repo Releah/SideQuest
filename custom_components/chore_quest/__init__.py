@@ -46,6 +46,7 @@ SERVICE_ADJUST_XP = "adjust_xp"
 SERVICE_UPSERT_STORE_ITEM = "upsert_store_item"
 SERVICE_DELETE_STORE_ITEM = "delete_store_item"
 SERVICE_SPEND_XP = "spend_xp"
+SERVICE_CASH_IN_STORE_TOKEN = "cash_in_store_token"
 SERVICE_DELETE_HISTORY = "delete_history_event"
 SERVICE_UPDATE_SETTINGS = "update_settings"
 SERVICE_WEEKLY_RESET = "weekly_reset"
@@ -57,6 +58,7 @@ ATTR_EVENT_ID = "event_id"
 ATTR_MISSION_ID = "mission_id"
 ATTR_TASK_ID = "task_id"
 ATTR_ITEM_ID = "item_id"
+ATTR_TOKEN_ID = "token_id"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -333,6 +335,15 @@ def _register_services(hass: HomeAssistant) -> None:
             user_id=call.context.user_id,
         )
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "spend_xp", "event": event})
+
+    async def cash_in_store_token(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        event = await store.async_cash_in_store_token(
+            call.data[ATTR_TOKEN_ID],
+            user_id=call.context.user_id,
+        )
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "cash_in_store_token", "event": event})
 
     async def delete_chore(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
@@ -613,6 +624,12 @@ def _register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_CASH_IN_STORE_TOKEN,
+        cash_in_store_token,
+        schema=vol.Schema({vol.Required(ATTR_TOKEN_ID): cv.string}),
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_DELETE_HISTORY,
         delete_history_event,
         schema=vol.Schema({vol.Required(ATTR_EVENT_ID): cv.string}),
@@ -722,7 +739,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-balance-adjustments",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-store-tokens",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

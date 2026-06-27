@@ -12,6 +12,8 @@ DEFAULT_DATA = {
     "anyone_quests": [],
     "global_missions": [],
     "global_mission_templates": [],
+    "store_items": [],
+    "store_tokens": [],
     "claims": {},
     "anyone_claims": {},
     "history": [],

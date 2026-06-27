@@ -48,6 +48,7 @@ class SideQuestStore:
             "global_missions",
             "global_mission_templates",
             "store_items",
+            "store_tokens",
             "history",
         ):
             merged[key] = stored.get(key, merged.get(key, []))
@@ -180,6 +181,9 @@ class SideQuestStore:
         self.data["weekly_totals"].pop(child_id, None)
         self.data["last_week_totals"].pop(child_id, None)
         self.data["xp_totals"].pop(child_id, None)
+        for token in self.data.get("store_tokens", []):
+            if token.get("child_id") == child_id and token.get("status") == "active":
+                token["status"] = "orphaned"
         await self.async_save()
 
     async def async_upsert_store_item(self, item: dict) -> dict:
@@ -248,11 +252,25 @@ class SideQuestStore:
 
         self.data.setdefault("xp_totals", {})
         self.data["xp_totals"][child_id] = available - spend
+        token = None
         if item_type == "goal":
             contributions = item.setdefault("contributions", {})
             contributions[child_id] = int(contributions.get(child_id, 0)) + spend
             if self.store_item_total_contributed(item) >= price:
                 item["completed_at"] = dt_util.now().isoformat()
+        else:
+            token = {
+                "id": str(uuid.uuid4()),
+                "item_id": item_id,
+                "item_title": item["title"],
+                "child_id": child_id,
+                "xp": spend,
+                "status": "active",
+                "purchased_at": dt_util.now().isoformat(),
+                "purchased_by": user_id,
+            }
+            self.data.setdefault("store_tokens", [])
+            self.data["store_tokens"].insert(0, token)
 
         event = {
             "id": str(uuid.uuid4()),
@@ -262,8 +280,39 @@ class SideQuestStore:
             "chore_name": item["title"],
             "store_item_id": item_id,
             "store_item_type": item_type,
+            "store_token_id": token.get("id") if token else None,
             "user_id": user_id,
             "xp": -spend,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    async def async_cash_in_store_token(
+        self,
+        token_id: str,
+        user_id: str | None = None,
+    ) -> dict:
+        """Mark a purchased store token as cashed in."""
+        token = self.get_store_token(token_id)
+        if token.get("status") != "active":
+            raise ValueError("This store token has already been cashed in.")
+        token["status"] = "redeemed"
+        token["redeemed_at"] = dt_util.now().isoformat()
+        token["redeemed_by"] = user_id
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "store_token_redeemed",
+            "child_id": token["child_id"],
+            "chore_id": token["item_id"],
+            "chore_name": token["item_title"],
+            "store_item_id": token["item_id"],
+            "store_token_id": token["id"],
+            "user_id": user_id,
+            "reward": 0,
+            "xp": 0,
             "created_at": dt_util.now().isoformat(),
         }
         self.data["history"].insert(0, event)
@@ -793,6 +842,19 @@ class SideQuestStore:
                     contributions[child_id] = max(0, int(contributions.get(child_id, 0)) + xp)
                     if self.store_item_total_contributed(item) < int(item.get("price", 0)):
                         item.pop("completed_at", None)
+            if event.get("type") == "store_purchase" and event.get("store_token_id"):
+                self.data["store_tokens"] = [
+                    token for token in self.data.get("store_tokens", []) if token["id"] != event.get("store_token_id")
+                ]
+        if event.get("type") == "store_token_redeemed" and event.get("store_token_id"):
+            token = next(
+                (store_token for store_token in self.data.get("store_tokens", []) if store_token["id"] == event.get("store_token_id")),
+                None,
+            )
+            if token:
+                token["status"] = "active"
+                token.pop("redeemed_at", None)
+                token.pop("redeemed_by", None)
 
         await self.async_save()
         return event
@@ -874,6 +936,13 @@ class SideQuestStore:
             if item["id"] == item_id:
                 return item
         raise ValueError(f"Unknown store item_id: {item_id}")
+
+    def get_store_token(self, token_id: str) -> dict:
+        """Return a store token by id."""
+        for token in self.data.get("store_tokens", []):
+            if token["id"] == token_id:
+                return token
+        raise ValueError(f"Unknown store token_id: {token_id}")
 
     def _get_chore_or_none(self, chore_id: str | None) -> dict | None:
         """Return a chore by id, if it still exists."""

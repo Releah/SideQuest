@@ -419,6 +419,13 @@ spend_xp:
           max: 100000
           step: 1
 
+cash_in_store_token:
+  fields:
+    token_id:
+      required: true
+      selector:
+        text:
+
 delete_history_event:
   fields:
     event_id:

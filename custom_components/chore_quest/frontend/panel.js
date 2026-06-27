@@ -179,14 +179,14 @@ class SideQuestPanel extends HTMLElement {
         }
         .store-image {
           width: 100%;
-          aspect-ratio: 16 / 9;
+          aspect-ratio: 4 / 3;
           border-radius: 12px;
           object-fit: cover;
           background: rgba(0,0,0,0.22);
           border: 1px solid rgba(122, 231, 255, 0.16);
         }
         .store-icon-fallback {
-          aspect-ratio: 16 / 9;
+          aspect-ratio: 4 / 3;
           border-radius: 12px;
           display: grid;
           place-items: center;
@@ -194,8 +194,25 @@ class SideQuestPanel extends HTMLElement {
           border: 1px solid rgba(122, 231, 255, 0.16);
         }
         .store-icon-fallback ha-icon {
-          --mdc-icon-size: 54px;
+          --mdc-icon-size: 42px;
           color: #ffcf5c;
+        }
+        .store-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+          gap: 12px;
+        }
+        .store-card {
+          min-height: 0;
+          gap: 10px;
+          padding: 12px;
+        }
+        .store-card h3 {
+          font-size: 1rem;
+        }
+        .store-card button {
+          min-height: 36px;
+          padding: 8px 10px;
         }
         .compact-grid {
           display: grid;
@@ -864,6 +881,7 @@ class SideQuestPanel extends HTMLElement {
             <button class="secondary" id="kid-tab">Kid View</button>
             <button class="secondary" id="dashboard-tab">Dashboard</button>
             <button class="secondary" id="store-tab">Store</button>
+            <button class="secondary" id="tokens-tab">Tokens</button>
             <button class="secondary" id="admin-tab">Admin</button>
           </div>
         </div>
@@ -876,7 +894,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-balance-adjustments</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-store-tokens</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -897,6 +915,9 @@ class SideQuestPanel extends HTMLElement {
     });
     this.querySelector("#store-tab").addEventListener("click", () => {
       this.renderStore().catch((err) => this.renderFatal(err));
+    });
+    this.querySelector("#tokens-tab").addEventListener("click", () => {
+      this.renderTokens().catch((err) => this.renderFatal(err));
     });
 
     await this.refresh();
@@ -968,6 +989,7 @@ class SideQuestPanel extends HTMLElement {
     this.data.global_missions = this.data.global_missions || [];
     this.data.global_mission_templates = this.data.global_mission_templates || [];
     this.data.store_items = this.data.store_items || [];
+    this.data.store_tokens = this.data.store_tokens || [];
     this.data.weekly_totals = this.data.weekly_totals || {};
     this.data.xp_totals = this.data.xp_totals || {};
   }
@@ -1330,6 +1352,8 @@ class SideQuestPanel extends HTMLElement {
     const child = this.me.child || this.data.children.find((item) => item.id === selectedChildId) || this.data.children[0];
     const xp = child ? Number(this.data.xp_totals[child.id] || 0) : 0;
     const items = (this.data.store_items || []).filter((item) => item.enabled !== false);
+    const rewards = items.filter((item) => (item.type || "item") !== "goal");
+    const goals = items.filter((item) => item.type === "goal");
 
     content.innerHTML = `
       <div class="quest-theme quest-board">
@@ -1368,8 +1392,12 @@ class SideQuestPanel extends HTMLElement {
           </div>
         </div>
         <h2 class="section-title">Rewards</h2>
-        <div class="quest-grid">
-          ${items.length ? items.map((item) => this.storeItemCard(item, child, xp)).join("") : `<div class="card empty-state"><p class="muted">The store shelf is empty right now.</p></div>`}
+        <div class="store-grid">
+          ${rewards.length ? rewards.map((item) => this.storeItemCard(item, child, xp)).join("") : `<div class="card empty-state"><p class="muted">The reward shelf is empty right now.</p></div>`}
+        </div>
+        <h2 class="section-title">Shared goals</h2>
+        <div class="store-grid">
+          ${goals.length ? goals.map((item) => this.storeItemCard(item, child, xp)).join("") : `<div class="card empty-state"><p class="muted">No shared goals are open right now.</p></div>`}
         </div>
       </div>
     `;
@@ -1394,6 +1422,60 @@ class SideQuestPanel extends HTMLElement {
             amount,
           });
           await this.renderStore(child.id);
+        });
+      });
+    });
+  }
+
+  async renderTokens(selectedChildId) {
+    await this.refresh();
+    const content = this.querySelector("#content");
+    const selectedChild = this.me.child || this.data.children.find((item) => item.id === selectedChildId) || this.data.children[0];
+    const canPickPlayer = !this.me.child;
+    const tokens = (this.data.store_tokens || [])
+      .filter((token) => !selectedChild || token.child_id === selectedChild.id)
+      .filter((token) => token.status !== "orphaned");
+
+    content.innerHTML = `
+      <div class="quest-theme quest-board">
+        <div class="quest-giver">
+          <div class="quest-giver-badge"><ha-icon icon="mdi:ticket-confirmation"></ha-icon></div>
+          <div>
+            <h2>Reward tokens</h2>
+            <p class="muted">Purchased rewards live here until a grown-up cashes them in.</p>
+          </div>
+        </div>
+        ${canPickPlayer ? `
+          <h2 class="section-title">Choose player</h2>
+          <div class="player-filter">
+            ${this.data.children.map((child) => `
+              <button class="secondary ${selectedChild && selectedChild.id === child.id ? "active" : ""}" data-token-select-child="${this.escapeHtml(child.id)}">
+                ${this.escapeHtml(child.name)}
+              </button>
+            `).join("")}
+          </div>
+        ` : ""}
+        <h2 class="section-title">${selectedChild ? this.escapeHtml(selectedChild.name) : "All"} tokens</h2>
+        <div class="store-grid">
+          ${tokens.length ? tokens.map((token) => this.storeTokenCard(token)).join("") : `<div class="card empty-state"><p class="muted">No reward tokens yet.</p></div>`}
+        </div>
+      </div>
+    `;
+
+    content.querySelectorAll("[data-token-select-child]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.renderTokens(button.dataset.tokenSelectChild);
+      });
+    });
+    content.querySelectorAll("[data-cash-token]").forEach((button) => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", async () => {
+        await this.runAction("Reward token cashed in.", async () => {
+          await this._hass.callService("chore_quest", "cash_in_store_token", {
+            token_id: button.dataset.cashToken,
+          });
+          await this.renderTokens(selectedChild && selectedChild.id);
         });
       });
     });
@@ -1627,7 +1709,7 @@ class SideQuestPanel extends HTMLElement {
       : `<div class="store-icon-fallback"><ha-icon icon="${this.escapeHtml(item.icon || "mdi:gift")}"></ha-icon></div>`;
     const progress = price ? Math.min(100, Math.round((contributed / price) * 100)) : 0;
     return `
-      <div class="card quest-card">
+      <div class="card quest-card store-card">
         ${image}
         <div class="quest-copy">
           <div class="badge-list">
@@ -1642,8 +1724,32 @@ class SideQuestPanel extends HTMLElement {
           ` : ""}
         </div>
         <button ${canSpend ? "" : "disabled"} data-buy-store-item="${this.escapeHtml(item.id)}">
-          ${complete ? "Goal funded" : isGoal ? "Contribute XP" : "Spend XP"}
+          ${complete ? "Funded" : isGoal ? "Contribute" : "Buy token"}
         </button>
+      </div>
+    `;
+  }
+
+  storeTokenCard(token) {
+    const item = (this.data.store_items || []).find((entry) => entry.id === token.item_id) || {};
+    const isRedeemed = token.status === "redeemed";
+    const created = token.purchased_at ? new Date(token.purchased_at).toLocaleDateString() : "";
+    const redeemed = token.redeemed_at ? new Date(token.redeemed_at).toLocaleDateString() : "";
+    const image = item.image_url
+      ? `<img class="store-image" src="${this.escapeHtml(item.image_url)}" alt="${this.escapeHtml(token.item_title)}">`
+      : `<div class="store-icon-fallback"><ha-icon icon="${this.escapeHtml(item.icon || "mdi:ticket-confirmation")}"></ha-icon></div>`;
+    return `
+      <div class="card quest-card store-card ${isRedeemed ? "mission-complete" : ""}">
+        ${image}
+        <div class="quest-copy">
+          <div class="badge-list">
+            <span class="mission-badge">${isRedeemed ? "Cashed in" : "Ready"}</span>
+            <span class="pill">${Number(token.xp || 0)} XP</span>
+          </div>
+          <h3>${this.escapeHtml(token.item_title)}</h3>
+          <p class="muted">${this.escapeHtml(this.childName(token.child_id))} bought this${created ? ` on ${created}` : ""}${redeemed ? ` - cashed in ${redeemed}` : ""}</p>
+        </div>
+        ${this.isAdmin() && !isRedeemed ? `<button data-cash-token="${this.escapeHtml(token.id)}">Cash in</button>` : ""}
       </div>
     `;
   }
@@ -1824,6 +1930,12 @@ class SideQuestPanel extends HTMLElement {
               <p class="muted">Create XP rewards players can buy, or shared goals that everyone can contribute XP toward.</p>
               <div class="chore-groups">
                 ${this.storeEditorRows()}
+              </div>
+            </div>
+            <div class="card admin-panel">
+              <h2><ha-icon icon="mdi:ticket-confirmation"></ha-icon>Purchased tokens</h2>
+              <div class="store-grid">
+                ${this.adminActiveTokenCards()}
               </div>
             </div>
           </section>
@@ -2207,6 +2319,19 @@ class SideQuestPanel extends HTMLElement {
         await this.runAction("Store item deleted.", async () => {
           await this._hass.callService("chore_quest", "delete_store_item", {
             item_id: button.dataset.deleteStoreRow,
+          });
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-cash-token]").forEach((button) => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", async () => {
+        await this.runAction("Reward token cashed in.", async () => {
+          await this._hass.callService("chore_quest", "cash_in_store_token", {
+            token_id: button.dataset.cashToken,
           });
           await this.renderAdmin();
         });
@@ -2926,6 +3051,14 @@ class SideQuestPanel extends HTMLElement {
       description: field("description")?.value.trim() || "",
       enabled: field("enabled")?.value !== "false",
     };
+  }
+
+  adminActiveTokenCards() {
+    const tokens = (this.data.store_tokens || []).filter((token) => token.status === "active");
+    if (!tokens.length) {
+      return `<div class="card empty-state"><p class="muted">No active reward tokens waiting to be cashed in.</p></div>`;
+    }
+    return tokens.map((token) => this.storeTokenCard(token)).join("");
   }
 
   taskStatusLabel(task) {
