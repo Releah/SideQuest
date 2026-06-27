@@ -531,6 +531,31 @@ class SideQuestStore:
             "status": "pending",
             "quantity": quantity,
         }
+        if not chore.get("approval_required", True):
+            child_id = chore["child_id"]
+            base_reward = float(chore.get("reward", 0))
+            reward = round(base_reward * quantity, 2)
+            xp = int(chore.get("xp", 0)) * quantity
+            self.data["weekly_totals"][child_id] = round(
+                float(self.data["weekly_totals"].get(child_id, 0)) + reward,
+                2,
+            )
+            self.data.setdefault("xp_totals", {})
+            self.data["xp_totals"][child_id] = int(self.data["xp_totals"].get(child_id, 0)) + xp
+            event = self._add_history(
+                "approved",
+                chore,
+                {**claim, "status": "approved"},
+                user_id=claimed_by,
+                reward=reward,
+                rating=5,
+                base_reward=reward,
+                xp=xp,
+                badges=chore.get("badges", []),
+                quantity=quantity,
+            )
+            await self.async_save()
+            return event
         claim_key = claim_id if chore.get("repeat_mode") == "unlimited" else chore_id
         self.data["claims"][claim_key] = claim
         self._add_history("claimed", chore, claim, user_id=claimed_by)

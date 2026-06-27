@@ -130,7 +130,8 @@ def _register_services(hass: HomeAssistant) -> None:
         chore_id = call.data[ATTR_CHORE_ID]
         claim_data = await store.async_claim(chore_id, quantity=call.data.get("quantity", 1))
         chore = store.get_chore(chore_id)
-        await _async_send_approval_notifications(hass, chore)
+        if claim_data.get("status") == "pending":
+            await _async_send_approval_notifications(hass, chore)
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "claim", "chore_id": chore_id, "claim": claim_data})
 
     async def approve(call: ServiceCall) -> None:
@@ -740,7 +741,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-anyone-approval-toggle",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-approval-store-rail",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }
