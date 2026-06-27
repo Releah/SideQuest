@@ -549,6 +549,37 @@ class SideQuestStore:
         await self.async_save()
         return event
 
+    async def async_adjust_xp(
+        self,
+        child_id: str,
+        amount: int,
+        note: str,
+        user_id: str | None = None,
+    ) -> dict:
+        """Add or subtract XP with a note."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+        amount = int(amount)
+        current = int(self.data.get("xp_totals", {}).get(child_id, 0))
+        self.data.setdefault("xp_totals", {})
+        self.data["xp_totals"][child_id] = max(0, current + amount)
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "xp_adjustment",
+            "child_id": child_id,
+            "chore_id": "xp_adjustment",
+            "chore_name": note or "XP adjustment",
+            "user_id": user_id,
+            "reward": 0,
+            "xp": amount,
+            "note": note,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
     async def async_upsert_global_mission(self, mission: dict) -> dict:
         """Create or update a global household mission."""
         mission = dict(mission)
@@ -743,6 +774,7 @@ class SideQuestStore:
             "anyone_approved",
             "global_task_approved",
             "global_task_completed",
+            "xp_adjustment",
             "store_purchase",
             "store_goal_contribution",
         ):
@@ -879,6 +911,7 @@ class SideQuestStore:
                 "anyone_approved",
                 "global_task_approved",
                 "global_task_completed",
+                "xp_adjustment",
                 "store_purchase",
                 "store_goal_contribution",
             ):

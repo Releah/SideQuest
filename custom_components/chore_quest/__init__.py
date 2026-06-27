@@ -42,6 +42,7 @@ SERVICE_SAVE_GLOBAL_TEMPLATE = "save_global_mission_template"
 SERVICE_LAUNCH_GLOBAL_TEMPLATE = "launch_global_mission_template"
 SERVICE_DELETE_GLOBAL_TEMPLATE = "delete_global_mission_template"
 SERVICE_ADJUST_MONEY = "adjust_money"
+SERVICE_ADJUST_XP = "adjust_xp"
 SERVICE_UPSERT_STORE_ITEM = "upsert_store_item"
 SERVICE_DELETE_STORE_ITEM = "delete_store_item"
 SERVICE_SPEND_XP = "spend_xp"
@@ -299,6 +300,17 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "adjust_money", "event": event})
 
+    async def adjust_xp(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        event = await store.async_adjust_xp(
+            call.data[ATTR_CHILD_ID],
+            call.data["amount"],
+            call.data.get("note", ""),
+            user_id=call.context.user_id,
+        )
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "adjust_xp", "event": event})
+
     async def upsert_store_item(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
         store = get_store(hass)
@@ -554,6 +566,18 @@ def _register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_ADJUST_XP,
+        adjust_xp,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_CHILD_ID): cv.string,
+                vol.Required("amount"): vol.Coerce(int),
+                vol.Optional("note", default=""): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_UPSERT_STORE_ITEM,
         upsert_store_item,
         schema=vol.Schema(
@@ -698,7 +722,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-store",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-balance-adjustments",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

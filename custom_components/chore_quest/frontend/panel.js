@@ -202,6 +202,19 @@ class SideQuestPanel extends HTMLElement {
           grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
           gap: 14px;
         }
+        .adjustment-box {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 12px;
+          align-items: end;
+          padding: 14px;
+          border-radius: 12px;
+          background: rgba(255,255,255,0.045);
+          border: 1px solid rgba(122, 231, 255, 0.16);
+        }
+        .adjustment-box h2 {
+          grid-column: 1 / -1;
+        }
         .money {
           height: 18px;
           border-radius: 999px;
@@ -863,7 +876,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-store</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-balance-adjustments</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1820,16 +1833,14 @@ class SideQuestPanel extends HTMLElement {
               ${this.data.children.map((child) => this.childCard(child)).join("")}
             </div>
             <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:cash-sync"></ha-icon>Pocket money adjustment</h2>
-              <p class="muted">Add a bonus or subtract spending money, with a note for the activity log.</p>
-              ${this.data.children.length ? `<form id="money-form">
-                <label>Child
-                  <select name="child_id">${this.data.children.map((child) => `<option value="${this.escapeHtml(child.id)}">${this.escapeHtml(child.name)}</option>`).join("")}</select>
-                </label>
-                <label>Amount<input name="amount" type="number" step="0.1" value="0.5"></label>
-                <label>Note<input name="note" required placeholder="Spent on sweets, bonus for helping"></label>
-                <button type="submit">Apply adjustment</button>
-              </form>` : `<p class="muted">Add a child before adjusting pocket money.</p>`}
+              <h2><ha-icon icon="mdi:cash-sync"></ha-icon>Pocket money and XP</h2>
+              <p class="muted">Choose a player, then add or subtract pocket money or XP with a note for the activity log.</p>
+              ${this.data.children.length ? `
+                <div class="player-filter">
+                  ${this.moneyPlayerButtons()}
+                </div>
+                ${this.moneyAdjustmentPanel()}
+              ` : `<p class="muted">Add a child before adjusting balances.</p>`}
             </div>
           </section>
 
@@ -1977,13 +1988,37 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
+    content.querySelectorAll("[data-money-player]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        this.selectedMoneyChildId = button.dataset.moneyPlayer;
+        await this.renderAdmin();
+      });
+    });
+
+    this.bindAdjustmentPreview(content);
+
     content.querySelector("#money-form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       await this.runAction("Pocket money adjusted.", async () => {
         const form = new FormData(event.currentTarget);
+        const sign = form.get("direction") === "subtract" ? -1 : 1;
         await this._hass.callService("chore_quest", "adjust_money", {
           child_id: form.get("child_id"),
-          amount: Number(form.get("amount")),
+          amount: sign * Number(form.get("amount")),
+          note: form.get("note"),
+        });
+        await this.renderAdmin();
+      });
+    });
+
+    content.querySelector("#xp-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await this.runAction("XP adjusted.", async () => {
+        const form = new FormData(event.currentTarget);
+        const sign = form.get("direction") === "subtract" ? -1 : 1;
+        await this._hass.callService("chore_quest", "adjust_xp", {
+          child_id: form.get("child_id"),
+          amount: sign * Number(form.get("amount")),
           note: form.get("note"),
         });
         await this.renderAdmin();
@@ -2268,6 +2303,7 @@ class SideQuestPanel extends HTMLElement {
 
   childCard(child) {
     const total = Number(this.data.weekly_totals[child.id] || 0);
+    const xp = Number(this.data.xp_totals[child.id] || 0);
     const goal = Number(child.goal || 10);
     const pct = Math.min(100, Math.round((total / goal) * 100));
     return `
@@ -2278,6 +2314,151 @@ class SideQuestPanel extends HTMLElement {
         </div>
         <div class="money"><div style="width:${pct}%"></div></div>
         <strong>GBP ${total.toFixed(2)} this week</strong>
+        <div class="rank-badge">
+          <ha-icon icon="mdi:star-shooting"></ha-icon>
+          <span>${xp} XP</span>
+        </div>
+      </div>
+    `;
+  }
+
+  selectedMoneyChild() {
+    const children = this.data.children || [];
+    if (!children.length) return null;
+    return children.find((child) => child.id === this.selectedMoneyChildId) || children[0];
+  }
+
+  moneyPlayerButtons() {
+    const selected = this.selectedMoneyChild();
+    return (this.data.children || [])
+      .map((child) => `
+        <button class="secondary ${selected && selected.id === child.id ? "active" : ""}" data-money-player="${this.escapeHtml(child.id)}">
+          ${this.escapeHtml(child.name)}
+        </button>
+      `)
+      .join("");
+  }
+
+  moneyAdjustmentPanel() {
+    const child = this.selectedMoneyChild();
+    if (!child) return "";
+    const money = Number(this.data.weekly_totals[child.id] || 0);
+    const xp = Number(this.data.xp_totals[child.id] || 0);
+    return `
+      <div class="grid">
+        ${this.adjustmentForm({
+          id: "money-form",
+          child,
+          title: "Pocket money",
+          icon: "mdi:cash-sync",
+          current: money,
+          unit: "GBP",
+          step: "0.1",
+          defaultAmount: "0.5",
+          amountLabel: "Amount",
+          notePlaceholder: "Spent on sweets, bonus for helping",
+        })}
+        ${this.adjustmentForm({
+          id: "xp-form",
+          child,
+          title: "XP",
+          icon: "mdi:star-shooting",
+          current: xp,
+          unit: "XP",
+          step: "1",
+          defaultAmount: "10",
+          amountLabel: "XP amount",
+          notePlaceholder: "Bonus XP, correction, store refund",
+        })}
+      </div>
+      <div class="card admin-panel">
+        <h2><ha-icon icon="mdi:history"></ha-icon>${this.escapeHtml(child.name)} ledger</h2>
+        ${this.childBalanceLog(child.id)}
+      </div>
+    `;
+  }
+
+  adjustmentForm(config) {
+    return `
+      <form id="${this.escapeHtml(config.id)}" class="adjustment-box" data-adjustment-form data-current="${Number(config.current || 0)}" data-unit="${this.escapeHtml(config.unit)}">
+        <input type="hidden" name="child_id" value="${this.escapeHtml(config.child.id)}">
+        <h2><ha-icon icon="${this.escapeHtml(config.icon)}"></ha-icon>${this.escapeHtml(config.title)}</h2>
+        <label>Current amount
+          <input data-current-display readonly value="${this.formatBalance(config.current, config.unit)}">
+        </label>
+        <label>Change
+          <select name="direction" data-adjust-direction>
+            <option value="add">Add</option>
+            <option value="subtract">Subtract</option>
+          </select>
+        </label>
+        <label>${this.escapeHtml(config.amountLabel)}
+          <input name="amount" data-adjust-amount type="number" min="0" step="${this.escapeHtml(config.step)}" value="${this.escapeHtml(config.defaultAmount)}">
+        </label>
+        <label>New amount
+          <input data-new-display readonly>
+        </label>
+        <label>Note
+          <input name="note" required placeholder="${this.escapeHtml(config.notePlaceholder)}">
+        </label>
+        <button type="submit">Submit ${this.escapeHtml(config.title)} change</button>
+      </form>
+    `;
+  }
+
+  bindAdjustmentPreview(content) {
+    content.querySelectorAll("[data-adjustment-form]").forEach((form) => {
+      const update = () => {
+        const current = Number(form.dataset.current || 0);
+        const direction = form.querySelector("[data-adjust-direction]")?.value || "add";
+        const amount = Number(form.querySelector("[data-adjust-amount]")?.value || 0);
+        const next = Math.max(0, current + (direction === "subtract" ? -amount : amount));
+        const unit = form.dataset.unit || "";
+        const output = form.querySelector("[data-new-display]");
+        if (output) output.value = this.formatBalance(next, unit);
+      };
+      form.querySelectorAll("[data-adjust-direction], [data-adjust-amount]").forEach((input) => {
+        input.addEventListener("input", update);
+        input.addEventListener("change", update);
+      });
+      update();
+    });
+  }
+
+  formatBalance(value, unit) {
+    const amount = Number(value || 0);
+    if (unit === "GBP") return `GBP ${amount.toFixed(2)}`;
+    if (unit === "XP") return `${Math.round(amount)} XP`;
+    return String(amount);
+  }
+
+  childBalanceLog(childId) {
+    const relevant = (this.data.history || [])
+      .filter((event) => event.child_id === childId)
+      .filter((event) =>
+        Number(event.reward || 0)
+        || Number(event.xp || 0)
+        || ["money_adjustment", "xp_adjustment", "store_purchase", "store_goal_contribution"].includes(event.type)
+      )
+      .slice(0, 10);
+    if (!relevant.length) return `<p class="muted">No balance activity yet.</p>`;
+    return relevant.map((event) => this.balanceLogRow(event)).join("");
+  }
+
+  balanceLogRow(event) {
+    const created = event.created_at ? new Date(event.created_at).toLocaleString() : "";
+    const reward = Number(event.reward || 0);
+    const xp = Number(event.xp || 0);
+    const rewardText = reward ? `GBP ${reward.toFixed(2)}` : "";
+    const xpText = xp ? `${xp > 0 ? "+" : ""}${xp} XP` : "";
+    const bits = [rewardText, xpText].filter(Boolean).join(" / ") || "No balance change";
+    return `
+      <div class="row">
+        <div>
+          <strong>${this.escapeHtml(event.chore_name || event.quest_name || event.type)}</strong>
+          <div class="muted">${this.escapeHtml(event.type)} - ${this.escapeHtml(bits)} - ${this.escapeHtml(created)}</div>
+          ${event.note ? `<div class="muted">${this.escapeHtml(event.note)}</div>` : ""}
+        </div>
       </div>
     `;
   }

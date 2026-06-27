@@ -343,6 +343,23 @@ adjust_money:
       selector:
         text:
 
+adjust_xp:
+  fields:
+    child_id:
+      required: true
+      selector:
+        text:
+    amount:
+      required: true
+      selector:
+        number:
+          min: -100000
+          max: 100000
+          step: 1
+    note:
+      selector:
+        text:
+
 upsert_store_item:
   fields:
     id:
