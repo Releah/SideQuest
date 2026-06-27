@@ -848,7 +848,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260621-notification-settings</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-quest-types</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -930,6 +930,9 @@ class SideQuestPanel extends HTMLElement {
     this.data.children = this.data.children || [];
     this.data.chores = this.data.chores || [];
     this.data.claims = this.data.claims || {};
+    this.data.anyone_quests = this.data.anyone_quests || [];
+    this.data.anyone_claims = this.data.anyone_claims || {};
+    this.data.anyone_quests_due = this.data.anyone_quests_due || [];
     this.data.history = this.data.history || [];
     this.data.global_missions = this.data.global_missions || [];
     this.data.global_mission_templates = this.data.global_mission_templates || [];
@@ -998,6 +1001,11 @@ class SideQuestPanel extends HTMLElement {
     return this.data.claims[choreId] ? this.data.claims[choreId].status : "open";
   }
 
+  anyoneClaimState(questId) {
+    const claim = Object.values(this.data.anyone_claims || {}).find((item) => item.quest_id === questId);
+    return claim ? claim.status : "open";
+  }
+
   async renderKid() {
     await this.refresh();
     const content = this.querySelector("#content");
@@ -1021,8 +1029,10 @@ class SideQuestPanel extends HTMLElement {
     const xp = Number(this.data.xp_totals[child.id] || 0);
     const rank = this.rankForXp(xp);
     const chores = this.me.chores || [];
+    const anyoneQuests = this.me.anyone_quests || this.data.anyone_quests_due || [];
     const pendingCount = chores.filter((chore) => this.claimState(chore.id) === "pending").length;
-    const readyCount = Math.max(0, chores.length - pendingCount);
+    const anyonePendingCount = anyoneQuests.filter((quest) => this.anyoneClaimState(quest.id) === "pending").length;
+    const readyCount = Math.max(0, chores.length + anyoneQuests.length - pendingCount - anyonePendingCount);
     const avatar = this.avatarHtml(child);
 
     content.innerHTML = `
@@ -1058,6 +1068,10 @@ class SideQuestPanel extends HTMLElement {
         <div class="quest-grid">
           ${chores.length ? chores.map((chore) => this.kidChoreCard(chore)).join("") : `<div class="card empty-state"><p class="muted">Mission control is clear right now.</p></div>`}
         </div>
+        <h2 class="section-title">Anyone quests</h2>
+        <div class="quest-grid">
+          ${anyoneQuests.length ? anyoneQuests.map((quest) => this.anyoneQuestCard(quest, child)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
+        </div>
       </div>
     `;
 
@@ -1068,6 +1082,19 @@ class SideQuestPanel extends HTMLElement {
           await this._hass.callService("chore_quest", "claim_chore", {
             chore_id: button.dataset.claim,
             quantity: this.claimQuantity(chore),
+          });
+          await this.renderKid();
+        });
+      });
+    });
+    content.querySelectorAll("[data-claim-anyone]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Shared quest sent for approval.", async () => {
+          const quest = this.data.anyone_quests.find((item) => item.id === button.dataset.claimAnyone) || {};
+          await this._hass.callService("chore_quest", "claim_anyone_quest", {
+            quest_id: button.dataset.claimAnyone,
+            child_id: child.id,
+            quantity: this.claimQuantity(quest),
           });
           await this.renderKid();
         });
@@ -1110,10 +1137,10 @@ class SideQuestPanel extends HTMLElement {
               ${this.avatarHtml(child)}
               <div>
                 <span class="pill">Mission control</span>
-                <h2>${this.escapeHtml(child.name)}'s house missions</h2>
+                <h2>${this.escapeHtml(child.name)}'s global missions</h2>
               </div>
             </div>
-            <p class="muted">These missions can be claimed by anyone. They do not need to be weekly chores to help the house team.</p>
+            <p class="muted">Global missions are bigger house objectives made from smaller tasks.</p>
           </div>
           <div class="card hero-side">
             <span class="pill">House tasks</span>
@@ -1121,13 +1148,30 @@ class SideQuestPanel extends HTMLElement {
             <p class="muted">${pendingTasks} waiting for approval</p>
           </div>
         </div>
-        <h2 class="section-title">House missions</h2>
+        <h2 class="section-title">Anyone quests</h2>
         <div class="quest-grid">
-          ${activeMissions.length ? activeMissions.map((mission) => this.globalMissionCard(mission, child)).join("") : `<div class="card empty-state"><p class="muted">No house missions posted right now.</p></div>`}
+          ${(this.me.anyone_quests || this.data.anyone_quests_due || []).length ? (this.me.anyone_quests || this.data.anyone_quests_due || []).map((quest) => this.anyoneQuestCard(quest, child)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
+        </div>
+        <h2 class="section-title">Global missions</h2>
+        <div class="quest-grid">
+          ${activeMissions.length ? activeMissions.map((mission) => this.globalMissionCard(mission, child)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
         </div>
       </div>
     `;
 
+    content.querySelectorAll("[data-claim-anyone]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Shared quest sent for approval.", async () => {
+          const quest = this.data.anyone_quests.find((item) => item.id === button.dataset.claimAnyone) || {};
+          await this._hass.callService("chore_quest", "claim_anyone_quest", {
+            quest_id: button.dataset.claimAnyone,
+            child_id: child.id,
+            quantity: this.claimQuantity(quest),
+          });
+          await this.renderKidDashboard();
+        });
+      });
+    });
     content.querySelectorAll("[data-claim-global-task]").forEach((button) => {
       button.addEventListener("click", async () => {
         await this.runAction("Mission task claimed.", async () => {
@@ -1179,9 +1223,13 @@ class SideQuestPanel extends HTMLElement {
             ${chores.length ? chores.map((chore) => this.kidChoreCard(chore)).join("") : `<p class="muted">No available quests right now.</p>`}
           </div>
         </div>
-        <h2 class="section-title">House missions</h2>
+        <h2 class="section-title">Anyone quests</h2>
         <div class="quest-grid">
-          ${this.activeGlobalMissions().length ? this.activeGlobalMissions().map((mission) => this.globalMissionCard(mission, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No house missions posted right now.</p></div>`}
+          ${(this.data.anyone_quests_due || []).length ? (this.data.anyone_quests_due || []).map((quest) => this.anyoneQuestCard(quest, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
+        </div>
+        <h2 class="section-title">Global missions</h2>
+        <div class="quest-grid">
+          ${this.activeGlobalMissions().length ? this.activeGlobalMissions().map((mission) => this.globalMissionCard(mission, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
         </div>
       </div>
     `;
@@ -1208,10 +1256,27 @@ class SideQuestPanel extends HTMLElement {
         });
       });
     });
+    content.querySelectorAll("[data-claim-anyone]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!selectedChild) {
+          this.setNotice("Add a player before claiming shared quests.", true);
+          return;
+        }
+        await this.runAction("Shared quest sent for approval.", async () => {
+          const quest = this.data.anyone_quests.find((item) => item.id === button.dataset.claimAnyone) || {};
+          await this._hass.callService("chore_quest", "claim_anyone_quest", {
+            quest_id: button.dataset.claimAnyone,
+            child_id: selectedChild.id,
+            quantity: this.claimQuantity(quest),
+          });
+          await this.renderKitchen(selectedChild.id);
+        });
+      });
+    });
     content.querySelectorAll("[data-claim-global-task]").forEach((button) => {
       button.addEventListener("click", async () => {
         if (!selectedChild) {
-          this.setNotice("Add a player before claiming house missions.", true);
+          this.setNotice("Add a player before claiming global missions.", true);
           return;
         }
         await this.runAction("Mission task claimed.", async () => {
@@ -1335,7 +1400,9 @@ class SideQuestPanel extends HTMLElement {
     weekStart.setDate(weekStart.getDate() - day);
     const year = now.getFullYear();
 
-    const approved = (this.data.history || []).filter((event) => event.type === "approved");
+    const approved = (this.data.history || []).filter((event) =>
+      ["approved", "anyone_approved", "global_task_approved", "global_task_completed"].includes(event.type)
+    );
     const approvedThisYear = approved.filter((event) => {
       const created = new Date(event.created_at);
       return !Number.isNaN(created.getTime()) && created.getFullYear() === year;
@@ -1356,7 +1423,12 @@ class SideQuestPanel extends HTMLElement {
       totalYear,
       completedWeek: approvedThisWeek.length,
       completedYear: approvedThisYear.length,
-      pendingCount: Object.keys(this.data.claims || {}).length,
+      pendingCount: Object.keys(this.data.claims || {}).length
+        + Object.keys(this.data.anyone_claims || {}).length
+        + this.activeGlobalMissions().reduce(
+          (count, mission) => count + (mission.tasks || []).filter((task) => task.status === "pending").length,
+          0,
+        ),
       topChildName: top.child ? top.child.name : "No leader yet",
       topChildTotal: top.total,
     };
@@ -1412,6 +1484,30 @@ class SideQuestPanel extends HTMLElement {
     `;
   }
 
+  anyoneQuestCard(quest, selectedChild) {
+    const pending = this.anyoneClaimState(quest.id) === "pending";
+    const blocksOnPending = quest.repeat_mode !== "unlimited";
+    const description = quest.description || "This is open to anyone in the house.";
+    return `
+      <div class="card quest-card">
+        <div class="quest-top">
+          <ha-icon icon="${this.escapeHtml(quest.icon || "mdi:account-group")}"></ha-icon>
+          <button class="secondary icon-button" title="Quest details" data-info="${this.escapeHtml(`anyone_${quest.id}`)}">?</button>
+        </div>
+        <div class="quest-copy">
+          <h3>${this.escapeHtml(quest.name)}</h3>
+          <span class="pill">Anyone - ${this.escapeHtml(this.scheduleLabel(quest.schedule))} - GBP ${Number(quest.reward).toFixed(2)}</span>
+          <div class="badge-list">${this.badgePills(quest.badges || ["team"])}</div>
+          <span class="pill">${Number(quest.xp || 0)} XP</span>
+          <p class="muted" data-info-panel="${this.escapeHtml(`anyone_${quest.id}`)}" style="display:none">${this.escapeHtml(description)}</p>
+        </div>
+        <button ${(!selectedChild || (pending && blocksOnPending)) ? "disabled" : ""} data-claim-anyone="${this.escapeHtml(quest.id)}">
+          ${!selectedChild ? "Choose a player first" : pending && blocksOnPending ? "Waiting for approval" : `Claim for ${this.escapeHtml(selectedChild.name)}`}
+        </button>
+      </div>
+    `;
+  }
+
   adminNavButton(section, label, icon, activeSection) {
     return `
       <button class="secondary ${activeSection === section ? "active" : ""}" data-admin-section="${this.escapeHtml(section)}">
@@ -1432,6 +1528,7 @@ class SideQuestPanel extends HTMLElement {
     await this.refreshUsers();
     const content = this.querySelector("#content");
     const pending = Object.values(this.data.claims || {});
+    const anyonePending = Object.values(this.data.anyone_claims || {});
     const activeAdminSection = this.adminSection || "home";
 
     content.innerHTML = `
@@ -1439,8 +1536,9 @@ class SideQuestPanel extends HTMLElement {
         <div class="card admin-nav">
           ${this.adminNavButton("home", "Home", "mdi:home", activeAdminSection)}
           ${this.adminNavButton("players", "Player management", "mdi:account-group", activeAdminSection)}
-          ${this.adminNavButton("chores", "Weekly chores", "mdi:calendar-check", activeAdminSection)}
-          ${this.adminNavButton("global", "Global Missions", "mdi:rocket-launch", activeAdminSection)}
+          ${this.adminNavButton("chores", "Personal quests", "mdi:calendar-check", activeAdminSection)}
+          ${this.adminNavButton("anyone", "Anyone quests", "mdi:account-multiple-check", activeAdminSection)}
+          ${this.adminNavButton("global", "Global missions", "mdi:rocket-launch", activeAdminSection)}
           ${this.adminNavButton("money", "Pocket money", "mdi:cash-sync", activeAdminSection)}
           ${this.adminNavButton("ranks", "Ranks", "mdi:shield-star", activeAdminSection)}
           ${this.adminNavButton("notifications", "Notifications", "mdi:bell", activeAdminSection)}
@@ -1453,7 +1551,9 @@ class SideQuestPanel extends HTMLElement {
             </div>
             <div class="card admin-panel">
               <h2><ha-icon icon="mdi:check-decagram"></ha-icon>Pending approvals</h2>
-              ${pending.length ? pending.map((claim) => this.pendingRow(claim)).join("") : `<p class="muted">No chores waiting for approval.</p>`}
+              ${pending.length || anyonePending.length || this.globalPendingTaskRows() ? "" : `<p class="muted">No quests waiting for approval.</p>`}
+              ${pending.map((claim) => this.pendingRow(claim)).join("")}
+              ${anyonePending.map((claim) => this.anyonePendingRow(claim)).join("")}
               ${this.globalPendingTaskRows()}
             </div>
           </section>
@@ -1497,8 +1597,8 @@ class SideQuestPanel extends HTMLElement {
 
           <section class="admin-section ${activeAdminSection === "chores" ? "active" : ""}" data-admin-panel="chores">
             <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:calendar-check"></ha-icon>Weekly chores</h2>
-              <p class="muted">Choose a player, then expand a task to edit its details. Use the new-task editor at the bottom to add another weekly chore.</p>
+              <h2><ha-icon icon="mdi:calendar-check"></ha-icon>Personal quests</h2>
+              <p class="muted">Choose a player, then expand a task to edit its details. Use the new-task editor at the bottom to add another personal quest.</p>
               <div class="player-filter">
                 ${this.chorePlayerButtons()}
               </div>
@@ -1508,10 +1608,20 @@ class SideQuestPanel extends HTMLElement {
             </div>
           </section>
 
+          <section class="admin-section ${activeAdminSection === "anyone" ? "active" : ""}" data-admin-panel="anyone">
+            <div class="card admin-panel">
+              <h2><ha-icon icon="mdi:account-multiple-check"></ha-icon>Anyone quests</h2>
+              <p class="muted">Use these for repeatable tasks that any player can claim. The reward and XP go to whoever claims and gets approved.</p>
+              <div class="chore-groups">
+                ${this.anyoneQuestEditorGroups()}
+              </div>
+            </div>
+          </section>
+
           <section class="admin-section ${activeAdminSection === "global" ? "active" : ""}" data-admin-panel="global">
             <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:rocket-launch"></ha-icon>House missions</h2>
-              <p class="muted">Global missions appear on the dashboard for anyone to complete. They award XP only, not pocket money.</p>
+              <h2><ha-icon icon="mdi:rocket-launch"></ha-icon>Global missions</h2>
+              <p class="muted">Global missions are grouped objectives with task rows. They can be saved as templates and launched again later.</p>
               <form id="global-mission-form">
                 <label>Mission objective<input name="name" required placeholder="Before screen time"></label>
                 <input name="id" type="hidden">
@@ -1638,6 +1748,14 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
+    content.querySelectorAll("[data-toggle-anyone-editor]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.dataset.toggleAnyoneEditor;
+        this.expandedAnyoneQuestId = this.expandedAnyoneQuestId === id ? "" : id;
+        await this.renderAdmin();
+      });
+    });
+
     content.querySelector("#child-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       await this.runAction("Child saved.", async () => {
@@ -1707,8 +1825,23 @@ class SideQuestPanel extends HTMLElement {
           this.setNotice("Chore rows need at least a name and player.", true);
           return;
         }
-        await this.runAction("Chore saved.", async () => {
+        await this.runAction("Personal quest saved.", async () => {
           await this._hass.callService("chore_quest", "upsert_chore", chore);
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-save-anyone-row]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest(".chore-editor");
+        const quest = this.readAnyoneQuestRow(row);
+        if (!quest.name) {
+          this.setNotice("Anyone quest rows need at least a name.", true);
+          return;
+        }
+        await this.runAction("Anyone quest saved.", async () => {
+          await this._hass.callService("chore_quest", "upsert_anyone_quest", quest);
           await this.renderAdmin();
         });
       });
@@ -1729,8 +1862,32 @@ class SideQuestPanel extends HTMLElement {
 
     content.querySelectorAll("[data-deny]").forEach((button) => {
       button.addEventListener("click", async () => {
-        await this.runAction("Chore denied.", async () => {
+        await this.runAction("Personal quest denied.", async () => {
           await this._hass.callService("chore_quest", "deny_chore", { chore_id: button.dataset.deny });
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-approve-anyone]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const rating = Number(button.dataset.rating || 5);
+        await this.runAction("Shared quest approved.", async () => {
+          await this._hass.callService("chore_quest", "approve_anyone_quest", {
+            quest_id: button.dataset.approveAnyone,
+            rating,
+          });
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-deny-anyone]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Shared quest denied.", async () => {
+          await this._hass.callService("chore_quest", "deny_anyone_quest", {
+            quest_id: button.dataset.denyAnyone,
+          });
           await this.renderAdmin();
         });
       });
@@ -1798,8 +1955,19 @@ class SideQuestPanel extends HTMLElement {
 
     content.querySelectorAll("[data-delete-chore-row]").forEach((button) => {
       button.addEventListener("click", async () => {
-        await this.runAction("Chore deleted.", async () => {
+        await this.runAction("Personal quest deleted.", async () => {
           await this._hass.callService("chore_quest", "delete_chore", { chore_id: button.dataset.deleteChoreRow });
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-delete-anyone-row]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Anyone quest deleted.", async () => {
+          await this._hass.callService("chore_quest", "delete_anyone_quest", {
+            quest_id: button.dataset.deleteAnyoneRow,
+          });
           await this.renderAdmin();
         });
       });
@@ -2010,7 +2178,7 @@ class SideQuestPanel extends HTMLElement {
   globalMissionRows() {
     const missions = this.data.global_missions || [];
     if (!missions.length) {
-      return `<p class="muted">No house missions have been posted yet.</p>`;
+      return `<p class="muted">No global missions have been posted yet.</p>`;
     }
     return missions
       .map((mission) => `
@@ -2072,12 +2240,12 @@ class SideQuestPanel extends HTMLElement {
 
   choreEditorGroups() {
     const child = this.selectedChoreChild();
-    if (!child) return `<div class="card empty-state"><p class="muted">Add a child in Player management before creating weekly chores.</p></div>`;
+    if (!child) return `<div class="card empty-state"><p class="muted">Add a child in Player management before creating personal quests.</p></div>`;
     const chores = (this.data.chores || []).filter((chore) => chore.child_id === child.id);
     return `
       <div class="chore-group">
         <h3>${this.escapeHtml(child.name)}</h3>
-        ${chores.length ? chores.map((chore) => this.choreEditorRow(chore, child.id, false)).join("") : `<p class="muted">No weekly chores for ${this.escapeHtml(child.name)} yet.</p>`}
+        ${chores.length ? chores.map((chore) => this.choreEditorRow(chore, child.id, false)).join("") : `<p class="muted">No personal quests for ${this.escapeHtml(child.name)} yet.</p>`}
         ${this.choreEditorRow({}, child.id, true)}
       </div>
     `;
@@ -2154,6 +2322,96 @@ class SideQuestPanel extends HTMLElement {
       reward: Number(field("reward")?.value || 0),
       xp: Number(field("xp")?.value || 0),
       badges: field("badges")?.value || "",
+      schedule: this.scheduleFromValue(field("schedule")?.value || "daily"),
+      repeat_mode: field("repeat_mode")?.value || "once_per_day",
+      quantity_enabled: field("quantity_enabled")?.value === "true",
+      quantity_label: field("quantity_label")?.value.trim() || "How many?",
+      description: field("description")?.value.trim() || "",
+      approval_required: true,
+      enabled: true,
+    };
+  }
+
+  anyoneQuestEditorGroups() {
+    const quests = this.data.anyone_quests || [];
+    return `
+      <div class="chore-group">
+        ${quests.length ? quests.map((quest) => this.anyoneQuestEditorRow(quest, false)).join("") : `<p class="muted">No anyone quests yet.</p>`}
+        ${this.anyoneQuestEditorRow({}, true)}
+      </div>
+    `;
+  }
+
+  anyoneQuestEditorRow(quest, isNew) {
+    const editorId = quest.id || "new_anyone_quest";
+    const open = isNew || this.expandedAnyoneQuestId === editorId;
+    const title = quest.name || "Add new anyone quest";
+    return `
+      <div class="chore-editor ${open ? "open" : ""}" data-anyone-row="${this.escapeHtml(quest.id || "")}">
+        <button type="button" class="secondary chore-editor-header" data-toggle-anyone-editor="${this.escapeHtml(editorId)}">
+          <strong><ha-icon icon="${this.escapeHtml(quest.icon || "mdi:account-group")}"></ha-icon>${this.escapeHtml(title)}</strong>
+          <span>${isNew ? "New" : open ? "Hide details" : "Edit"}</span>
+        </button>
+        <div class="chore-editor-body">
+          <div class="chore-editor-line">
+            <label>Quest name<input data-anyone-field="name" value="${this.escapeHtml(quest.name || "")}" placeholder="Empty dishwasher"></label>
+            <label>Quest icon${this.iconPickerInput('data-anyone-field="icon"', quest.icon || "mdi:account-group", "mdi:broom")}</label>
+            <label>Quest description<input data-anyone-field="description" value="${this.escapeHtml(quest.description || "")}" placeholder="What should this include?"></label>
+          </div>
+          <div class="chore-editor-line">
+            <label>Reward<input data-anyone-field="reward" type="number" min="0" step="0.1" value="${Number(quest.reward || 0)}"></label>
+            <label>XP<input data-anyone-field="xp" type="number" min="0" step="1" value="${Number(quest.xp ?? 10)}"></label>
+            <label>Badge
+              <select data-anyone-field="badges">
+                ${this.badgeOptions((quest.badges || ["team"])[0])}
+              </select>
+            </label>
+          </div>
+          <div class="chore-editor-line">
+            <label>Schedule
+              <select data-anyone-field="schedule">
+                <option value="none" ${this.scheduleValue(quest.schedule) === "none" ? "selected" : ""}>No schedule</option>
+                <option value="daily" ${this.scheduleValue(quest.schedule) === "daily" ? "selected" : ""}>Daily</option>
+                <option value="weekdays" ${this.scheduleValue(quest.schedule) === "weekdays" ? "selected" : ""}>Weekdays</option>
+                <option value="weekend" ${this.scheduleValue(quest.schedule) === "weekend" ? "selected" : ""}>Weekend</option>
+              </select>
+            </label>
+            <label>Repeat
+              <select data-anyone-field="repeat_mode">
+                <option value="once_per_day" ${(quest.repeat_mode || "once_per_day") === "once_per_day" ? "selected" : ""}>Once per day</option>
+                <option value="once_per_week" ${quest.repeat_mode === "once_per_week" ? "selected" : ""}>Once per week</option>
+                <option value="unlimited" ${quest.repeat_mode === "unlimited" ? "selected" : ""}>Any time</option>
+              </select>
+            </label>
+            <label>Ask quantity
+              <select data-anyone-field="quantity_enabled">
+                <option value="false" ${!quest.quantity_enabled ? "selected" : ""}>No</option>
+                <option value="true" ${quest.quantity_enabled ? "selected" : ""}>Yes</option>
+              </select>
+            </label>
+          </div>
+          <div class="chore-editor-line">
+            <label>Quantity prompt<input data-anyone-field="quantity_label" value="${this.escapeHtml(quest.quantity_label || "How many?")}"></label>
+            <div class="chore-editor-actions">
+              <button type="button" data-save-anyone-row>${isNew ? "Add anyone quest" : "Save"}</button>
+              ${isNew ? "" : `<button type="button" class="danger" data-delete-anyone-row="${this.escapeHtml(quest.id)}">Delete</button>`}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  readAnyoneQuestRow(row) {
+    const field = (name) => row.querySelector(`[data-anyone-field="${name}"]`);
+    const id = row.dataset.anyoneRow || undefined;
+    return {
+      id,
+      name: field("name")?.value.trim() || "",
+      icon: field("icon")?.value.trim() || "mdi:account-group",
+      reward: Number(field("reward")?.value || 0),
+      xp: Number(field("xp")?.value || 0),
+      badges: field("badges")?.value || "team",
       schedule: this.scheduleFromValue(field("schedule")?.value || "daily"),
       repeat_mode: field("repeat_mode")?.value || "once_per_day",
       quantity_enabled: field("quantity_enabled")?.value === "true",
@@ -2449,6 +2707,31 @@ class SideQuestPanel extends HTMLElement {
     `;
   }
 
+  anyonePendingRow(claim) {
+    const quest = this.data.anyone_quests.find((item) => item.id === claim.quest_id);
+    if (!quest) return "";
+    const reward = Number(quest.reward || 0);
+    const quantity = Number(claim.quantity || 1);
+    const fullReward = reward * quantity;
+    const quantityText = quantity > 1 ? ` - Quantity ${quantity}` : "";
+    return `
+      <div class="row">
+        <div>
+          <strong>${this.escapeHtml(this.childName(claim.child_id))} - ${this.escapeHtml(quest.name)}</strong>
+          <div class="muted">Anyone quest - claimed ${new Date(claim.claimed_at).toLocaleString()}${quantityText} - Full reward GBP ${fullReward.toFixed(2)}</div>
+        </div>
+        <div class="rating-actions" aria-label="Approve shared quest rating">
+          ${[1, 2, 3, 4, 5].map((rating) => `
+            <button title="${rating} star approval pays GBP ${(fullReward * (rating / 5)).toFixed(2)}" data-approve-anyone="${this.escapeHtml(quest.id)}" data-rating="${rating}">
+              ${"&#9733;".repeat(rating)}
+            </button>
+          `).join("")}
+          <button class="danger" data-deny-anyone="${this.escapeHtml(quest.id)}">Deny</button>
+        </div>
+      </div>
+    `;
+  }
+
   globalPendingTaskRows() {
     const pendingTasks = [];
     for (const mission of this.data.global_missions || []) {
@@ -2494,7 +2777,7 @@ class SideQuestPanel extends HTMLElement {
 
   adminChoresByChild() {
     if (!this.data.chores.length) {
-      return `<p class="muted">No chores yet.</p>`;
+      return `<p class="muted">No personal quests yet.</p>`;
     }
     return this.data.children
       .map((child) => {
@@ -2621,7 +2904,7 @@ class SideQuestPanel extends HTMLElement {
     const baseReward = Number(event.base_reward || event.reward || 0);
     const rating = event.rating ? Number(event.rating) : null;
     const created = event.created_at ? new Date(event.created_at).toLocaleString() : "";
-    const canReverse = event.type === "approved";
+    const canReverse = ["approved", "anyone_approved", "global_task_approved", "global_task_completed", "money_adjustment"].includes(event.type);
     const actionText = canReverse ? "Delete and subtract" : "Delete";
     const ratingText = rating ? ` - ${rating}/5 stars` : "";
     const quantity = Number(event.quantity || 1);
@@ -2632,7 +2915,7 @@ class SideQuestPanel extends HTMLElement {
     return `
       <div class="row">
         <div>
-          <strong>${this.escapeHtml(this.childName(event.child_id))} - ${this.escapeHtml(event.chore_name || event.chore_id)}</strong>
+          <strong>${this.escapeHtml(this.childName(event.child_id))} - ${this.escapeHtml(event.chore_name || event.quest_name || event.chore_id || event.quest_id)}</strong>
           <div class="muted">${this.escapeHtml(event.type)}${ratingText}${quantityText}${rewardText}${xpText}${noteText} - ${this.escapeHtml(created)}</div>
         </div>
         <button class="${canReverse ? "danger" : "secondary"}" data-delete-history="${this.escapeHtml(event.id)}">${actionText}</button>

@@ -1,6 +1,6 @@
 # SideQuest
 
-SideQuest is a Home Assistant custom integration for family chores, rewards, house missions, XP, ranks, and kid-friendly dashboards.
+SideQuest is a Home Assistant custom integration for personal quests, anyone quests, global missions, rewards, XP, ranks, and kid-friendly dashboards.
 
 It stores its data in Home Assistant storage and provides a custom sidebar panel, so normal chore management does not require YAML helpers.
 
@@ -8,10 +8,10 @@ It stores its data in Home Assistant storage and provides a custom sidebar panel
 
 - Kid view for personal weekly quests.
 - Shared dashboard view for house tablets or room users.
-- Parent/admin panel for players, chores, house missions, pocket money, ranks, and logs.
+- Parent/admin panel for players, personal quests, anyone quests, global missions, pocket money, ranks, and logs.
 - Parent approval flow with optional Home Assistant mobile app notifications.
-- Reward, XP, rank, badge, schedule, repeat, and quantity settings per chore.
-- Global house missions with reusable templates and claimable subtasks.
+- Reward, XP, rank, badge, schedule, repeat, and quantity settings per quest.
+- Global missions with reusable templates and claimable subtasks.
 
 ## Manual Install
 
@@ -51,9 +51,10 @@ You can find your notify services in Home Assistant Developer Tools.
 2. Go to Admin -> Player management.
 3. Add children and link them to Home Assistant users.
 4. Optionally add dashboard users for shared tablets or room accounts.
-5. Go to Admin -> Weekly chores and create chores for each child.
-6. Go to Admin -> Global Missions to create shared house missions.
-7. Go to Admin -> Ranks to customise the XP ladder.
+5. Go to Admin -> Personal quests and create repeating quests for each child.
+6. Go to Admin -> Anyone quests for repeating tasks that any child can claim.
+7. Go to Admin -> Global missions to create grouped house objectives and reusable templates.
+8. Go to Admin -> Ranks to customise the XP ladder.
 
 ## Notes
 

@@ -122,6 +122,104 @@ delete_chore:
       selector:
         text:
 
+claim_anyone_quest:
+  fields:
+    quest_id:
+      required: true
+      selector:
+        text:
+    child_id:
+      required: true
+      selector:
+        text:
+    quantity:
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+
+approve_anyone_quest:
+  fields:
+    quest_id:
+      required: true
+      selector:
+        text:
+    rating:
+      selector:
+        number:
+          min: 1
+          max: 5
+          step: 1
+
+deny_anyone_quest:
+  fields:
+    quest_id:
+      required: true
+      selector:
+        text:
+
+upsert_anyone_quest:
+  fields:
+    id:
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    icon:
+      selector:
+        icon:
+    description:
+      selector:
+        text:
+          multiline: true
+    reward:
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+    badges:
+      selector:
+        text:
+    xp:
+      selector:
+        number:
+          min: 0
+          max: 1000
+          step: 1
+    enabled:
+      selector:
+        boolean:
+    approval_required:
+      selector:
+        boolean:
+    repeat_mode:
+      selector:
+        select:
+          options:
+            - once_per_day
+            - once_per_week
+            - unlimited
+    quantity_enabled:
+      selector:
+        boolean:
+    quantity_label:
+      selector:
+        text:
+    schedule:
+      selector:
+        object:
+
+delete_anyone_quest:
+  fields:
+    quest_id:
+      required: true
+      selector:
+        text:
+
 upsert_global_mission:
   fields:
     id:

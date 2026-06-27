@@ -41,10 +41,10 @@ class SideQuestStore:
     def _merge_defaults(self, stored: dict) -> dict:
         merged = deepcopy(DEFAULT_DATA)
         merged.update(stored)
-        for key in ("children", "chores", "global_missions", "global_mission_templates", "history"):
+        for key in ("children", "chores", "anyone_quests", "global_missions", "global_mission_templates", "history"):
             merged[key] = stored.get(key, merged[key])
         merged["settings"] = {**merged.get("settings", {}), **stored.get("settings", {})}
-        for key in ("claims", "weekly_totals", "last_week_totals", "xp_totals"):
+        for key in ("claims", "anyone_claims", "weekly_totals", "last_week_totals", "xp_totals"):
             merged[key] = {**merged.get(key, {}), **stored.get(key, {})}
         return merged
 
@@ -93,14 +93,39 @@ class SideQuestStore:
 
     def is_claimable(self, chore: dict, when: datetime) -> bool:
         """Return whether the chore can be claimed again."""
-        repeat_mode = chore.get("repeat_mode", "once_per_day")
+        return self._is_claimable(chore, when, self.data["claims"], "approved", "chore_id")
+
+    def due_anyone_quests(self, when: datetime | None = None) -> list[dict]:
+        """Return enabled shared quests that any child can claim."""
+        when = when or dt_util.now()
+        return [
+            quest
+            for quest in self.data["anyone_quests"]
+            if quest.get("enabled", True)
+            and self.is_due(quest, when)
+            and self.is_anyone_claimable(quest, when)
+        ]
+
+    def is_anyone_claimable(self, quest: dict, when: datetime) -> bool:
+        """Return whether a shared quest can be claimed again."""
+        return self._is_claimable(quest, when, self.data["anyone_claims"], "anyone_approved", "quest_id")
+
+    def _is_claimable(
+        self,
+        quest: dict,
+        when: datetime,
+        claims: dict,
+        approved_event_type: str,
+        event_id_key: str,
+    ) -> bool:
+        repeat_mode = quest.get("repeat_mode", "once_per_day")
         if repeat_mode == "unlimited":
             return True
-        if chore["id"] in self.data["claims"]:
+        if quest["id"] in claims:
             return False
 
         for event in self.data["history"]:
-            if event.get("type") != "approved" or event.get("chore_id") != chore["id"]:
+            if event.get("type") != approved_event_type or event.get(event_id_key) != quest["id"]:
                 continue
             created_at = dt_util.parse_datetime(event.get("created_at", ""))
             if created_at is None:
@@ -138,6 +163,11 @@ class SideQuestStore:
             chore_id: claim
             for chore_id, claim in self.data["claims"].items()
             if chore_id not in chore_ids
+        }
+        self.data["anyone_claims"] = {
+            claim_id: claim
+            for claim_id, claim in self.data["anyone_claims"].items()
+            if claim.get("child_id") != child_id
         }
         self.data["weekly_totals"].pop(child_id, None)
         self.data["last_week_totals"].pop(child_id, None)
@@ -180,6 +210,135 @@ class SideQuestStore:
         self.data["chores"] = [chore for chore in self.data["chores"] if chore["id"] != chore_id]
         self.data["claims"].pop(chore_id, None)
         await self.async_save()
+
+    async def async_upsert_anyone_quest(self, quest: dict) -> dict:
+        """Create or update a quest that can be claimed by any child."""
+        quest = dict(quest)
+        quest.setdefault("id", self._slug(f"anyone_{quest['name']}"))
+        quest.setdefault("enabled", True)
+        quest.setdefault("approval_required", True)
+        quest.setdefault("schedule", {"type": "daily"})
+        quest.setdefault("repeat_mode", "once_per_day")
+        quest.setdefault("icon", "mdi:account-group")
+        quest.setdefault("description", "")
+        quest.setdefault("badges", ["team"])
+        quest.setdefault("xp", 10)
+        quest.setdefault("quantity_enabled", False)
+        quest.setdefault("quantity_label", "How many?")
+        quest["reward"] = float(quest.get("reward", 0))
+        quest["xp"] = int(float(quest.get("xp", 0)))
+        quest["badges"] = self._normalise_badges(quest.get("badges", []))
+        quest["quantity_enabled"] = bool(quest.get("quantity_enabled", False))
+        quest["quantity_label"] = str(quest.get("quantity_label", "")).strip() or "How many?"
+
+        existing = next((item for item in self.data["anyone_quests"] if item["id"] == quest["id"]), None)
+        if existing:
+            existing.update(quest)
+            result = existing
+        else:
+            self.data["anyone_quests"].append(quest)
+            result = quest
+
+        await self.async_save()
+        return result
+
+    async def async_delete_anyone_quest(self, quest_id: str) -> None:
+        """Delete a shared quest and any open claims for it."""
+        self.data["anyone_quests"] = [quest for quest in self.data["anyone_quests"] if quest["id"] != quest_id]
+        self.data["anyone_claims"] = {
+            key: claim
+            for key, claim in self.data["anyone_claims"].items()
+            if claim.get("quest_id") != quest_id
+        }
+        await self.async_save()
+
+    async def async_claim_anyone_quest(
+        self,
+        quest_id: str,
+        child_id: str,
+        claimed_by: str | None = None,
+        quantity: int = 1,
+    ) -> dict:
+        """Claim a shared quest for a child."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+        quest = self.get_anyone_quest(quest_id)
+        if not self.is_anyone_claimable(quest, dt_util.now()):
+            raise ValueError("This quest is not currently available to claim.")
+        now = dt_util.now().isoformat()
+        quantity = max(1, int(quantity or 1))
+        claim_id = str(uuid.uuid4())
+        claim = {
+            "id": claim_id,
+            "quest_id": quest_id,
+            "child_id": child_id,
+            "claimed_by": claimed_by,
+            "claimed_at": now,
+            "status": "pending",
+            "quantity": quantity,
+        }
+        claim_key = claim_id if quest.get("repeat_mode") == "unlimited" else quest_id
+        self.data["anyone_claims"][claim_key] = claim
+        self._add_anyone_history("anyone_claimed", quest, claim, user_id=claimed_by)
+        await self.async_save()
+        return claim
+
+    async def async_approve_anyone_quest(
+        self,
+        quest_id: str,
+        approved_by: str | None = None,
+        rating: int = 5,
+    ) -> dict:
+        """Approve a shared quest and award it to the claiming child."""
+        quest = self.get_anyone_quest(quest_id)
+        claim = self.data["anyone_claims"].pop(quest_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["anyone_claims"].items() if value.get("quest_id") == quest_id),
+                None,
+            )
+            claim = self.data["anyone_claims"].pop(claim_key, None) if claim_key else None
+        if not claim:
+            raise ValueError("This quest has no pending claim.")
+        child_id = claim["child_id"]
+        base_reward = float(quest.get("reward", 0))
+        quantity = max(1, int(claim.get("quantity", 1) or 1))
+        rating = max(1, min(5, int(rating or 5)))
+        reward = round(base_reward * quantity * (rating / 5), 2)
+        xp = round(int(quest.get("xp", 0)) * quantity * (rating / 5))
+        self.data["weekly_totals"][child_id] = round(
+            float(self.data["weekly_totals"].get(child_id, 0)) + reward, 2
+        )
+        self.data.setdefault("xp_totals", {})
+        self.data["xp_totals"][child_id] = int(self.data["xp_totals"].get(child_id, 0)) + xp
+        event = self._add_anyone_history(
+            "anyone_approved",
+            quest,
+            claim,
+            user_id=approved_by,
+            reward=reward,
+            rating=rating,
+            base_reward=round(base_reward * quantity, 2),
+            xp=xp,
+            badges=quest.get("badges", []),
+            quantity=quantity,
+        )
+        await self.async_save()
+        return event
+
+    async def async_deny_anyone_quest(self, quest_id: str, denied_by: str | None = None) -> dict:
+        """Deny a shared quest claim."""
+        quest = self.get_anyone_quest(quest_id)
+        claim = self.data["anyone_claims"].pop(quest_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["anyone_claims"].items() if value.get("quest_id") == quest_id),
+                None,
+            )
+            claim = self.data["anyone_claims"].pop(claim_key, None) if claim_key else None
+        event = self._add_anyone_history("anyone_denied", quest, claim, user_id=denied_by)
+        await self.async_save()
+        return event
 
     async def async_claim(self, chore_id: str, claimed_by: str | None = None, quantity: int = 1) -> dict:
         """Mark a chore as claimed done and pending approval."""
@@ -473,12 +632,12 @@ class SideQuestStore:
 
         self.data["history"] = [item for item in self.data["history"] if item["id"] != event_id]
 
-        if event.get("type") in ("approved", "money_adjustment", "global_task_approved", "global_task_completed"):
+        if event.get("type") in ("approved", "anyone_approved", "money_adjustment", "global_task_approved", "global_task_completed"):
             child_id = event["child_id"]
             reward = float(event.get("reward", 0))
             current = float(self.data["weekly_totals"].get(child_id, 0))
             self.data["weekly_totals"][child_id] = round(max(0, current - reward), 2)
-        if event.get("type") in ("approved", "global_task_approved", "global_task_completed"):
+        if event.get("type") in ("approved", "anyone_approved", "global_task_approved", "global_task_completed"):
             child_id = event["child_id"]
             xp = int(event.get("xp", 0))
             current_xp = int(self.data.get("xp_totals", {}).get(child_id, 0))
@@ -543,6 +702,13 @@ class SideQuestStore:
                 return chore
         raise ValueError(f"Unknown chore_id: {chore_id}")
 
+    def get_anyone_quest(self, quest_id: str) -> dict:
+        """Return a shared quest by id."""
+        for quest in self.data["anyone_quests"]:
+            if quest["id"] == quest_id:
+                return quest
+        raise ValueError(f"Unknown quest_id: {quest_id}")
+
     def _get_chore_or_none(self, chore_id: str | None) -> dict | None:
         """Return a chore by id, if it still exists."""
         if not chore_id:
@@ -555,25 +721,26 @@ class SideQuestStore:
     def _normalise_history_xp(self) -> None:
         """Backfill missing XP on old approved chore history entries."""
         for event in self.data.get("history", []):
-            if event.get("type") != "approved":
+            if event.get("type") not in ("approved", "anyone_approved"):
                 continue
-            chore = self._get_chore_or_none(event.get("chore_id"))
-            if not chore:
+            quest = self._get_chore_or_none(event.get("chore_id")) or self._get_anyone_quest_or_none(event.get("quest_id"))
+            if not quest:
                 continue
-            chore_xp = int(float(chore.get("xp", 0) or 0))
-            if not chore_xp:
+            quest_xp = int(float(quest.get("xp", 0) or 0))
+            if not quest_xp:
                 continue
             current_xp = int(float(event.get("xp", 0) or 0))
             if current_xp:
                 continue
             rating = max(1, min(5, int(event.get("rating") or 5)))
-            event["xp"] = round(chore_xp * (rating / 5))
+            quantity = max(1, int(event.get("quantity", 1) or 1))
+            event["xp"] = round(quest_xp * quantity * (rating / 5))
 
     def _rebuild_xp_totals(self) -> None:
         """Rebuild XP totals from history so backfilled events are counted."""
         totals = {child["id"]: 0 for child in self.data.get("children", [])}
         for event in self.data.get("history", []):
-            if event.get("type") not in ("approved", "global_task_approved", "global_task_completed"):
+            if event.get("type") not in ("approved", "anyone_approved", "global_task_approved", "global_task_completed"):
                 continue
             child_id = event.get("child_id")
             if not child_id:
@@ -614,6 +781,50 @@ class SideQuestStore:
             "chore_id": chore["id"],
             "chore_name": chore["name"],
             "child_id": chore["child_id"],
+            "user_id": user_id,
+            "reward": reward,
+            "rating": rating,
+            "base_reward": base_reward,
+            "xp": xp,
+            "badges": badges or [],
+            "quantity": quantity,
+            "claim": claim,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        return event
+
+    def _get_anyone_quest_or_none(self, quest_id: str | None) -> dict | None:
+        """Return a shared quest by id, if it still exists."""
+        if not quest_id:
+            return None
+        for quest in self.data["anyone_quests"]:
+            if quest["id"] == quest_id:
+                return quest
+        return None
+
+    def _add_anyone_history(
+        self,
+        event_type: str,
+        quest: dict,
+        claim: dict | None,
+        user_id: str | None = None,
+        reward: float = 0,
+        rating: int | None = None,
+        base_reward: float | None = None,
+        xp: int = 0,
+        badges: list[str] | None = None,
+        quantity: int = 1,
+    ) -> dict:
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "quest_id": quest["id"],
+            "quest_name": quest["name"],
+            "chore_id": quest["id"],
+            "chore_name": quest["name"],
+            "child_id": (claim or {}).get("child_id"),
             "user_id": user_id,
             "reward": reward,
             "rating": rating,

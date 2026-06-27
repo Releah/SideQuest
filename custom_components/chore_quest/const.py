@@ -9,9 +9,11 @@ CONF_NOTIFY_TARGETS = "notify_targets"
 DEFAULT_DATA = {
     "children": [],
     "chores": [],
+    "anyone_quests": [],
     "global_missions": [],
     "global_mission_templates": [],
     "claims": {},
+    "anyone_claims": {},
     "history": [],
     "settings": {
         "kitchen_user_ids": [],

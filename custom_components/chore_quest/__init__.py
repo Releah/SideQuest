@@ -27,6 +27,11 @@ SERVICE_ADD_CHILD = "add_child"
 SERVICE_DELETE_CHILD = "delete_child"
 SERVICE_UPSERT_CHORE = "upsert_chore"
 SERVICE_DELETE_CHORE = "delete_chore"
+SERVICE_CLAIM_ANYONE_QUEST = "claim_anyone_quest"
+SERVICE_APPROVE_ANYONE_QUEST = "approve_anyone_quest"
+SERVICE_DENY_ANYONE_QUEST = "deny_anyone_quest"
+SERVICE_UPSERT_ANYONE_QUEST = "upsert_anyone_quest"
+SERVICE_DELETE_ANYONE_QUEST = "delete_anyone_quest"
 SERVICE_UPSERT_GLOBAL_MISSION = "upsert_global_mission"
 SERVICE_DELETE_GLOBAL_MISSION = "delete_global_mission"
 SERVICE_COMPLETE_GLOBAL_MISSION = "complete_global_mission"
@@ -42,6 +47,7 @@ SERVICE_UPDATE_SETTINGS = "update_settings"
 SERVICE_WEEKLY_RESET = "weekly_reset"
 
 ATTR_CHORE_ID = "chore_id"
+ATTR_QUEST_ID = "quest_id"
 ATTR_CHILD_ID = "child_id"
 ATTR_EVENT_ID = "event_id"
 ATTR_MISSION_ID = "mission_id"
@@ -123,6 +129,48 @@ def _register_services(hass: HomeAssistant) -> None:
         await _async_clear_notifications(hass, chore_id)
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny", "chore_id": chore_id, "event": event})
 
+    async def claim_anyone_quest(call: ServiceCall) -> None:
+        store = get_store(hass)
+        quest_id = call.data[ATTR_QUEST_ID]
+        claim_data = await store.async_claim_anyone_quest(
+            quest_id,
+            call.data[ATTR_CHILD_ID],
+            claimed_by=call.context.user_id,
+            quantity=call.data.get("quantity", 1),
+        )
+        quest = store.get_anyone_quest(quest_id)
+        await _async_send_anyone_approval_notifications(hass, quest)
+        hass.bus.async_fire(
+            f"{DOMAIN}_updated",
+            {"action": "claim_anyone_quest", "quest_id": quest_id, "claim": claim_data},
+        )
+
+    async def approve_anyone_quest(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        quest_id = call.data[ATTR_QUEST_ID]
+        event = await store.async_approve_anyone_quest(
+            quest_id,
+            approved_by=call.context.user_id,
+            rating=call.data.get("rating", 5),
+        )
+        await _async_clear_anyone_notifications(hass, quest_id)
+        hass.bus.async_fire(
+            f"{DOMAIN}_updated",
+            {"action": "approve_anyone_quest", "quest_id": quest_id, "event": event},
+        )
+
+    async def deny_anyone_quest(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        quest_id = call.data[ATTR_QUEST_ID]
+        event = await store.async_deny_anyone_quest(quest_id, denied_by=call.context.user_id)
+        await _async_clear_anyone_notifications(hass, quest_id)
+        hass.bus.async_fire(
+            f"{DOMAIN}_updated",
+            {"action": "deny_anyone_quest", "quest_id": quest_id, "event": event},
+        )
+
     async def add_child(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
         store = get_store(hass)
@@ -150,6 +198,12 @@ def _register_services(hass: HomeAssistant) -> None:
         store = get_store(hass)
         chore = await store.async_upsert_chore(dict(call.data))
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_chore", "chore": chore})
+
+    async def upsert_anyone_quest(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        quest = await store.async_upsert_anyone_quest(dict(call.data))
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_anyone_quest", "quest": quest})
 
     async def upsert_global_mission(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
@@ -235,6 +289,14 @@ def _register_services(hass: HomeAssistant) -> None:
         await store.async_delete_chore(chore_id)
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_chore", "chore_id": chore_id})
 
+    async def delete_anyone_quest(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        quest_id = call.data[ATTR_QUEST_ID]
+        await store.async_delete_anyone_quest(quest_id)
+        await _async_clear_anyone_notifications(hass, quest_id)
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_anyone_quest", "quest_id": quest_id})
+
     async def delete_history_event(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
         store = get_store(hass)
@@ -268,6 +330,7 @@ def _register_services(hass: HomeAssistant) -> None:
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "weekly_reset"})
 
     chore_id_schema = vol.Schema({vol.Required(ATTR_CHORE_ID): cv.string})
+    quest_id_schema = vol.Schema({vol.Required(ATTR_QUEST_ID): cv.string})
     claim_schema = vol.Schema(
         {
             vol.Required(ATTR_CHORE_ID): cv.string,
@@ -280,9 +343,44 @@ def _register_services(hass: HomeAssistant) -> None:
             vol.Optional("rating", default=5): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
         }
     )
+    anyone_claim_schema = vol.Schema(
+        {
+            vol.Required(ATTR_QUEST_ID): cv.string,
+            vol.Required(ATTR_CHILD_ID): cv.string,
+            vol.Optional("quantity", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+        }
+    )
+    anyone_approve_schema = vol.Schema(
+        {
+            vol.Required(ATTR_QUEST_ID): cv.string,
+            vol.Optional("rating", default=5): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
+        }
+    )
+    quest_schema = vol.Schema(
+        {
+            vol.Optional("id"): cv.string,
+            vol.Required("name"): cv.string,
+            vol.Optional("icon", default="mdi:account-group"): cv.string,
+            vol.Optional("description", default=""): cv.string,
+            vol.Optional("reward", default=0): vol.Coerce(float),
+            vol.Optional("badges", default=[]): vol.Any([cv.string], cv.string),
+            vol.Optional("xp", default=10): vol.Coerce(int),
+            vol.Optional("enabled", default=True): cv.boolean,
+            vol.Optional("approval_required", default=True): cv.boolean,
+            vol.Optional("repeat_mode", default="once_per_day"): vol.In(
+                ["once_per_day", "once_per_week", "unlimited"]
+            ),
+            vol.Optional("quantity_enabled", default=False): cv.boolean,
+            vol.Optional("quantity_label", default="How many?"): cv.string,
+            vol.Optional("schedule", default={"type": "daily"}): dict,
+        }
+    )
     hass.services.async_register(DOMAIN, SERVICE_CLAIM, claim, schema=claim_schema)
     hass.services.async_register(DOMAIN, SERVICE_APPROVE, approve, schema=approve_schema)
     hass.services.async_register(DOMAIN, SERVICE_DENY, deny, schema=chore_id_schema)
+    hass.services.async_register(DOMAIN, SERVICE_CLAIM_ANYONE_QUEST, claim_anyone_quest, schema=anyone_claim_schema)
+    hass.services.async_register(DOMAIN, SERVICE_APPROVE_ANYONE_QUEST, approve_anyone_quest, schema=anyone_approve_schema)
+    hass.services.async_register(DOMAIN, SERVICE_DENY_ANYONE_QUEST, deny_anyone_quest, schema=quest_id_schema)
     hass.services.async_register(
         DOMAIN,
         SERVICE_ADD_CHILD,
@@ -327,6 +425,8 @@ def _register_services(hass: HomeAssistant) -> None:
         ),
     )
     hass.services.async_register(DOMAIN, SERVICE_DELETE_CHORE, delete_chore, schema=chore_id_schema)
+    hass.services.async_register(DOMAIN, SERVICE_UPSERT_ANYONE_QUEST, upsert_anyone_quest, schema=quest_schema)
+    hass.services.async_register(DOMAIN, SERVICE_DELETE_ANYONE_QUEST, delete_anyone_quest, schema=quest_id_schema)
     hass.services.async_register(
         DOMAIN,
         SERVICE_UPSERT_GLOBAL_MISSION,
@@ -475,6 +575,39 @@ async def _async_clear_notifications(hass: HomeAssistant, chore_id: str) -> None
         )
 
 
+async def _async_send_anyone_approval_notifications(hass: HomeAssistant, quest: dict) -> None:
+    """Send approval notifications for shared quests."""
+    for target in get_notify_targets(hass):
+        await hass.services.async_call(
+            "notify",
+            target.removeprefix("notify."),
+            {
+                "title": "SideQuest approval",
+                "message": f"{quest['name']} is ready. Rate the shared quest to approve the payout.",
+                "data": {
+                    "tag": f"sidequest_anyone_{quest['id']}",
+                    "actions": [
+                        {"action": f"SIDEQUEST_ANYONE_APPROVE_5_{quest['id']}", "title": "5 star"},
+                        {"action": f"SIDEQUEST_ANYONE_APPROVE_4_{quest['id']}", "title": "4 star"},
+                        {"action": f"SIDEQUEST_ANYONE_DENY_{quest['id']}", "title": "Deny", "destructive": True},
+                    ],
+                },
+            },
+            blocking=False,
+        )
+
+
+async def _async_clear_anyone_notifications(hass: HomeAssistant, quest_id: str) -> None:
+    """Clear stale shared quest approval notifications."""
+    for target in get_notify_targets(hass):
+        await hass.services.async_call(
+            "notify",
+            target.removeprefix("notify."),
+            {"message": "clear_notification", "data": {"tag": f"sidequest_anyone_{quest_id}"}},
+            blocking=False,
+        )
+
+
 async def _async_register_panel(hass: HomeAssistant) -> None:
     """Register static assets and sidebar panel."""
     panel_dir = Path(__file__).parent / "frontend"
@@ -490,7 +623,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260621-notification-settings",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-quest-types",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }
@@ -555,6 +688,7 @@ def _register_websocket(hass: HomeAssistant) -> None:
             data["user_profiles"] = await _async_user_profiles(hass)
             data["notify_services"] = _notify_services(hass)
             data["notify_targets"] = get_notify_targets(hass)
+            data["anyone_quests_due"] = store.due_anyone_quests()
             connection.send_result(msg["id"], data)
 
         hass.async_create_task(_list())
@@ -568,7 +702,12 @@ def _register_websocket(hass: HomeAssistant) -> None:
         chores = store.due_chores_for_child(child["id"]) if child else []
         connection.send_result(
             msg["id"],
-            {"child": child, "chores": chores, "is_kitchen": store.is_kitchen_user(user_id)},
+            {
+                "child": child,
+                "chores": chores,
+                "anyone_quests": store.due_anyone_quests(),
+                "is_kitchen": store.is_kitchen_user(user_id),
+            },
         )
 
     @websocket_api.websocket_command({vol.Required("type"): "chore_quest/users"})
@@ -607,7 +746,7 @@ def _register_websocket(hass: HomeAssistant) -> None:
         child = store.get_child_for_user(getattr(connection, "user", None).id)
         is_admin = _connection_is_admin(connection)
         is_kitchen = store.is_kitchen_user(getattr(connection, "user", None).id)
-        if not is_admin and not is_kitchen and child["id"] != msg["child_id"]:
+        if not is_admin and not is_kitchen and (not child or child["id"] != msg["child_id"]):
             connection.send_error(msg["id"], "not_allowed", "You can only view your own SideQuest chores.")
             return
         connection.send_result(msg["id"], store.due_chores_for_child(msg["child_id"]))
@@ -689,6 +828,43 @@ def _register_websocket(hass: HomeAssistant) -> None:
 
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): "chore_quest/upsert_anyone_quest",
+            vol.Required("quest"): dict,
+        }
+    )
+    @callback
+    def websocket_upsert_anyone_quest(hass: HomeAssistant, connection, msg) -> None:
+        if _send_admin_required(connection, msg):
+            return
+
+        async def _save() -> None:
+            quest = await get_store(hass).async_upsert_anyone_quest(msg["quest"])
+            connection.send_result(msg["id"], quest)
+            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_anyone_quest", "quest": quest})
+
+        hass.async_create_task(_save())
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "chore_quest/delete_anyone_quest",
+            vol.Required("quest_id"): cv.string,
+        }
+    )
+    @callback
+    def websocket_delete_anyone_quest(hass: HomeAssistant, connection, msg) -> None:
+        if _send_admin_required(connection, msg):
+            return
+
+        async def _delete() -> None:
+            await get_store(hass).async_delete_anyone_quest(msg["quest_id"])
+            await _async_clear_anyone_notifications(hass, msg["quest_id"])
+            connection.send_result(msg["id"], {"ok": True})
+            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_anyone_quest", "quest_id": msg["quest_id"]})
+
+        hass.async_create_task(_delete())
+
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): "chore_quest/delete_history_event",
             vol.Required("event_id"): cv.string,
         }
@@ -738,6 +914,8 @@ def _register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_add_child)
     websocket_api.async_register_command(hass, websocket_delete_child)
     websocket_api.async_register_command(hass, websocket_delete_chore)
+    websocket_api.async_register_command(hass, websocket_upsert_anyone_quest)
+    websocket_api.async_register_command(hass, websocket_delete_anyone_quest)
     websocket_api.async_register_command(hass, websocket_delete_history_event)
     websocket_api.async_register_command(hass, websocket_update_settings)
 
@@ -745,6 +923,8 @@ def _register_websocket(hass: HomeAssistant) -> None:
         action = event.data.get("action", "")
         prefix_approve = "CHORE_QUEST_APPROVE_"
         prefix_deny = "CHORE_QUEST_DENY_"
+        prefix_anyone_approve = "SIDEQUEST_ANYONE_APPROVE_"
+        prefix_anyone_deny = "SIDEQUEST_ANYONE_DENY_"
         if action.startswith(prefix_approve):
             payload = action.removeprefix(prefix_approve)
             rating = 5
@@ -763,5 +943,23 @@ def _register_websocket(hass: HomeAssistant) -> None:
             await get_store(hass).async_deny(chore_id)
             await _async_clear_notifications(hass, chore_id)
             hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny", "chore_id": chore_id})
+        elif action.startswith(prefix_anyone_approve):
+            payload = action.removeprefix(prefix_anyone_approve)
+            rating = 5
+            quest_id = payload
+            if len(payload) > 2 and payload[0] in "12345" and payload[1] == "_":
+                rating = int(payload[0])
+                quest_id = payload[2:]
+            event_data = await get_store(hass).async_approve_anyone_quest(quest_id, rating=rating)
+            await _async_clear_anyone_notifications(hass, quest_id)
+            hass.bus.async_fire(
+                f"{DOMAIN}_updated",
+                {"action": "approve_anyone_quest", "quest_id": quest_id, "rating": rating, "event": event_data},
+            )
+        elif action.startswith(prefix_anyone_deny):
+            quest_id = action.removeprefix(prefix_anyone_deny)
+            await get_store(hass).async_deny_anyone_quest(quest_id)
+            await _async_clear_anyone_notifications(hass, quest_id)
+            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny_anyone_quest", "quest_id": quest_id})
 
     hass.bus.async_listen("mobile_app_notification_action", _handle_mobile_action)
