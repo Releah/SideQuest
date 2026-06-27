@@ -50,7 +50,7 @@ class SideQuestStore:
             "store_items",
             "history",
         ):
-            merged[key] = stored.get(key, merged[key])
+            merged[key] = stored.get(key, merged.get(key, []))
         merged["settings"] = {**merged.get("settings", {}), **stored.get("settings", {})}
         for key in ("claims", "anyone_claims", "weekly_totals", "last_week_totals", "xp_totals"):
             merged[key] = {**merged.get(key, {}), **stored.get(key, {})}
