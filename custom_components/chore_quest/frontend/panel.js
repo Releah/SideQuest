@@ -894,7 +894,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-store-tokens</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-anyone-approval-toggle</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -2951,6 +2951,12 @@ class SideQuestPanel extends HTMLElement {
             </label>
           </div>
           <div class="chore-editor-line">
+            <label>Needs approval
+              <select data-anyone-field="approval_required">
+                <option value="true" ${quest.approval_required !== false ? "selected" : ""}>Yes</option>
+                <option value="false" ${quest.approval_required === false ? "selected" : ""}>No, award straight away</option>
+              </select>
+            </label>
             <label>Quantity prompt<input data-anyone-field="quantity_label" value="${this.escapeHtml(quest.quantity_label || "How many?")}"></label>
             <div class="chore-editor-actions">
               <button type="button" data-save-anyone-row>${isNew ? "Add anyone quest" : "Save"}</button>
@@ -2977,7 +2983,7 @@ class SideQuestPanel extends HTMLElement {
       quantity_enabled: field("quantity_enabled")?.value === "true",
       quantity_label: field("quantity_label")?.value.trim() || "How many?",
       description: field("description")?.value.trim() || "",
-      approval_required: true,
+      approval_required: field("approval_required")?.value !== "false",
       enabled: true,
     };
   }
