@@ -42,6 +42,9 @@ SERVICE_SAVE_GLOBAL_TEMPLATE = "save_global_mission_template"
 SERVICE_LAUNCH_GLOBAL_TEMPLATE = "launch_global_mission_template"
 SERVICE_DELETE_GLOBAL_TEMPLATE = "delete_global_mission_template"
 SERVICE_ADJUST_MONEY = "adjust_money"
+SERVICE_UPSERT_STORE_ITEM = "upsert_store_item"
+SERVICE_DELETE_STORE_ITEM = "delete_store_item"
+SERVICE_SPEND_XP = "spend_xp"
 SERVICE_DELETE_HISTORY = "delete_history_event"
 SERVICE_UPDATE_SETTINGS = "update_settings"
 SERVICE_WEEKLY_RESET = "weekly_reset"
@@ -52,6 +55,7 @@ ATTR_CHILD_ID = "child_id"
 ATTR_EVENT_ID = "event_id"
 ATTR_MISSION_ID = "mission_id"
 ATTR_TASK_ID = "task_id"
+ATTR_ITEM_ID = "item_id"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -295,6 +299,29 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "adjust_money", "event": event})
 
+    async def upsert_store_item(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        item = await store.async_upsert_store_item(dict(call.data))
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_store_item", "item": item})
+
+    async def delete_store_item(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        store = get_store(hass)
+        item_id = call.data[ATTR_ITEM_ID]
+        await store.async_delete_store_item(item_id)
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_store_item", "item_id": item_id})
+
+    async def spend_xp(call: ServiceCall) -> None:
+        store = get_store(hass)
+        event = await store.async_spend_xp(
+            call.data[ATTR_ITEM_ID],
+            call.data[ATTR_CHILD_ID],
+            amount=call.data.get("amount"),
+            user_id=call.context.user_id,
+        )
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "spend_xp", "event": event})
+
     async def delete_chore(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
         store = get_store(hass)
@@ -527,6 +554,41 @@ def _register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_UPSERT_STORE_ITEM,
+        upsert_store_item,
+        schema=vol.Schema(
+            {
+                vol.Optional("id"): cv.string,
+                vol.Required("title"): cv.string,
+                vol.Optional("description", default=""): cv.string,
+                vol.Optional("image_url", default=""): cv.string,
+                vol.Optional("icon", default="mdi:gift"): cv.string,
+                vol.Optional("type", default="item"): vol.In(["item", "goal"]),
+                vol.Optional("price", default=0): vol.Coerce(int),
+                vol.Optional("enabled", default=True): cv.boolean,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_STORE_ITEM,
+        delete_store_item,
+        schema=vol.Schema({vol.Required(ATTR_ITEM_ID): cv.string}),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SPEND_XP,
+        spend_xp,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_ITEM_ID): cv.string,
+                vol.Required(ATTR_CHILD_ID): cv.string,
+                vol.Optional("amount"): vol.Coerce(int),
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_DELETE_HISTORY,
         delete_history_event,
         schema=vol.Schema({vol.Required(ATTR_EVENT_ID): cv.string}),
@@ -636,7 +698,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-notification-table",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-store",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

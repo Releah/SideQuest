@@ -41,7 +41,15 @@ class SideQuestStore:
     def _merge_defaults(self, stored: dict) -> dict:
         merged = deepcopy(DEFAULT_DATA)
         merged.update(stored)
-        for key in ("children", "chores", "anyone_quests", "global_missions", "global_mission_templates", "history"):
+        for key in (
+            "children",
+            "chores",
+            "anyone_quests",
+            "global_missions",
+            "global_mission_templates",
+            "store_items",
+            "history",
+        ):
             merged[key] = stored.get(key, merged[key])
         merged["settings"] = {**merged.get("settings", {}), **stored.get("settings", {})}
         for key in ("claims", "anyone_claims", "weekly_totals", "last_week_totals", "xp_totals"):
@@ -173,6 +181,99 @@ class SideQuestStore:
         self.data["last_week_totals"].pop(child_id, None)
         self.data["xp_totals"].pop(child_id, None)
         await self.async_save()
+
+    async def async_upsert_store_item(self, item: dict) -> dict:
+        """Create or update a store item or shared goal."""
+        item = dict(item)
+        item.setdefault("id", self._slug(f"store_{item['title']}"))
+        item.setdefault("title", "Store item")
+        item.setdefault("description", "")
+        item.setdefault("image_url", "")
+        item.setdefault("icon", "mdi:gift")
+        item.setdefault("type", "item")
+        item.setdefault("enabled", True)
+        item.setdefault("contributions", {})
+        item["type"] = "goal" if item.get("type") == "goal" else "item"
+        item["price"] = max(0, int(float(item.get("price", 0) or 0)))
+        item["enabled"] = bool(item.get("enabled", True))
+        item["contributions"] = {
+            str(child_id): max(0, int(float(xp or 0)))
+            for child_id, xp in (item.get("contributions") or {}).items()
+        }
+
+        existing = next((entry for entry in self.data["store_items"] if entry["id"] == item["id"]), None)
+        if existing:
+            existing.update(item)
+            result = existing
+        else:
+            self.data["store_items"].append(item)
+            result = item
+        await self.async_save()
+        return result
+
+    async def async_delete_store_item(self, item_id: str) -> None:
+        """Delete a store item."""
+        self.data["store_items"] = [item for item in self.data["store_items"] if item["id"] != item_id]
+        await self.async_save()
+
+    async def async_spend_xp(
+        self,
+        item_id: str,
+        child_id: str,
+        amount: int | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        """Spend XP on a personal item or contribute to a shared goal."""
+        item = self.get_store_item(item_id)
+        if item.get("enabled", True) is False:
+            raise ValueError("This store item is not available.")
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+
+        available = int(self.data.get("xp_totals", {}).get(child_id, 0))
+        price = int(item.get("price", 0))
+        item_type = item.get("type", "item")
+        if item_type == "goal":
+            remaining = max(0, price - self.store_item_total_contributed(item))
+            spend = max(1, int(amount or remaining or price))
+            spend = min(spend, remaining)
+            if spend <= 0:
+                raise ValueError("This goal is already complete.")
+        else:
+            spend = price
+        if spend <= 0:
+            raise ValueError("Store items need an XP price above zero.")
+        if available < spend:
+            raise ValueError("Not enough XP for this store item.")
+
+        self.data.setdefault("xp_totals", {})
+        self.data["xp_totals"][child_id] = available - spend
+        if item_type == "goal":
+            contributions = item.setdefault("contributions", {})
+            contributions[child_id] = int(contributions.get(child_id, 0)) + spend
+            if self.store_item_total_contributed(item) >= price:
+                item["completed_at"] = dt_util.now().isoformat()
+
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "store_goal_contribution" if item_type == "goal" else "store_purchase",
+            "child_id": child_id,
+            "chore_id": item_id,
+            "chore_name": item["title"],
+            "store_item_id": item_id,
+            "store_item_type": item_type,
+            "user_id": user_id,
+            "xp": -spend,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    def store_item_total_contributed(self, item: dict) -> int:
+        """Return total XP contributed to a shared goal."""
+        return sum(int(float(value or 0)) for value in (item.get("contributions") or {}).values())
 
     async def async_upsert_chore(self, chore: dict) -> dict:
         """Create or update a chore."""
@@ -637,12 +738,29 @@ class SideQuestStore:
             reward = float(event.get("reward", 0))
             current = float(self.data["weekly_totals"].get(child_id, 0))
             self.data["weekly_totals"][child_id] = round(max(0, current - reward), 2)
-        if event.get("type") in ("approved", "anyone_approved", "global_task_approved", "global_task_completed"):
+        if event.get("type") in (
+            "approved",
+            "anyone_approved",
+            "global_task_approved",
+            "global_task_completed",
+            "store_purchase",
+            "store_goal_contribution",
+        ):
             child_id = event["child_id"]
             xp = int(event.get("xp", 0))
             current_xp = int(self.data.get("xp_totals", {}).get(child_id, 0))
             self.data.setdefault("xp_totals", {})
             self.data["xp_totals"][child_id] = max(0, current_xp - xp)
+            if event.get("type") == "store_goal_contribution":
+                item = next(
+                    (store_item for store_item in self.data["store_items"] if store_item["id"] == event.get("store_item_id")),
+                    None,
+                )
+                if item:
+                    contributions = item.setdefault("contributions", {})
+                    contributions[child_id] = max(0, int(contributions.get(child_id, 0)) + xp)
+                    if self.store_item_total_contributed(item) < int(item.get("price", 0)):
+                        item.pop("completed_at", None)
 
         await self.async_save()
         return event
@@ -718,6 +836,13 @@ class SideQuestStore:
                 return quest
         raise ValueError(f"Unknown quest_id: {quest_id}")
 
+    def get_store_item(self, item_id: str) -> dict:
+        """Return a store item by id."""
+        for item in self.data["store_items"]:
+            if item["id"] == item_id:
+                return item
+        raise ValueError(f"Unknown store item_id: {item_id}")
+
     def _get_chore_or_none(self, chore_id: str | None) -> dict | None:
         """Return a chore by id, if it still exists."""
         if not chore_id:
@@ -749,7 +874,14 @@ class SideQuestStore:
         """Rebuild XP totals from history so backfilled events are counted."""
         totals = {child["id"]: 0 for child in self.data.get("children", [])}
         for event in self.data.get("history", []):
-            if event.get("type") not in ("approved", "anyone_approved", "global_task_approved", "global_task_completed"):
+            if event.get("type") not in (
+                "approved",
+                "anyone_approved",
+                "global_task_approved",
+                "global_task_completed",
+                "store_purchase",
+                "store_goal_contribution",
+            ):
                 continue
             child_id = event.get("child_id")
             if not child_id:

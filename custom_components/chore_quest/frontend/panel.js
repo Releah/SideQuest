@@ -177,6 +177,26 @@ class SideQuestPanel extends HTMLElement {
           box-shadow: 0 14px 34px rgba(0,0,0,0.24);
           backdrop-filter: blur(8px);
         }
+        .store-image {
+          width: 100%;
+          aspect-ratio: 16 / 9;
+          border-radius: 12px;
+          object-fit: cover;
+          background: rgba(0,0,0,0.22);
+          border: 1px solid rgba(122, 231, 255, 0.16);
+        }
+        .store-icon-fallback {
+          aspect-ratio: 16 / 9;
+          border-radius: 12px;
+          display: grid;
+          place-items: center;
+          background: linear-gradient(135deg, rgba(0,216,255,0.18), rgba(124,92,255,0.16));
+          border: 1px solid rgba(122, 231, 255, 0.16);
+        }
+        .store-icon-fallback ha-icon {
+          --mdc-icon-size: 54px;
+          color: #ffcf5c;
+        }
         .compact-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -830,6 +850,7 @@ class SideQuestPanel extends HTMLElement {
             <button class="secondary home-button" id="home-tab">Home</button>
             <button class="secondary" id="kid-tab">Kid View</button>
             <button class="secondary" id="dashboard-tab">Dashboard</button>
+            <button class="secondary" id="store-tab">Store</button>
             <button class="secondary" id="admin-tab">Admin</button>
           </div>
         </div>
@@ -842,7 +863,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-notification-table</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-store</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -860,6 +881,9 @@ class SideQuestPanel extends HTMLElement {
       } else {
         this.renderKitchen().catch((err) => this.renderFatal(err));
       }
+    });
+    this.querySelector("#store-tab").addEventListener("click", () => {
+      this.renderStore().catch((err) => this.renderFatal(err));
     });
 
     await this.refresh();
@@ -930,6 +954,7 @@ class SideQuestPanel extends HTMLElement {
     this.data.history = this.data.history || [];
     this.data.global_missions = this.data.global_missions || [];
     this.data.global_mission_templates = this.data.global_mission_templates || [];
+    this.data.store_items = this.data.store_items || [];
     this.data.weekly_totals = this.data.weekly_totals || {};
     this.data.xp_totals = this.data.xp_totals || {};
   }
@@ -1286,6 +1311,81 @@ class SideQuestPanel extends HTMLElement {
     this.bindInfoButtons(content);
   }
 
+  async renderStore(selectedChildId) {
+    await this.refresh();
+    const content = this.querySelector("#content");
+    const child = this.me.child || this.data.children.find((item) => item.id === selectedChildId) || this.data.children[0];
+    const xp = child ? Number(this.data.xp_totals[child.id] || 0) : 0;
+    const items = (this.data.store_items || []).filter((item) => item.enabled !== false);
+
+    content.innerHTML = `
+      <div class="quest-theme quest-board">
+        <div class="quest-giver">
+          <div class="quest-giver-badge"><ha-icon icon="mdi:storefront"></ha-icon></div>
+          <div>
+            <h2>XP store</h2>
+            <p class="muted">Spend XP on rewards, or help fund a shared goal with the rest of the house team.</p>
+          </div>
+        </div>
+        ${this.me.child ? "" : `
+          <h2 class="section-title">Choose player</h2>
+          <div class="player-filter">
+            ${this.data.children.map((player) => `
+              <button class="secondary ${child && child.id === player.id ? "active" : ""}" data-store-select-child="${this.escapeHtml(player.id)}">
+                ${this.escapeHtml(player.name)}
+              </button>
+            `).join("")}
+          </div>
+        `}
+        <div class="hero">
+          <div class="hero-main">
+            <div class="avatar-row">
+              ${child ? this.avatarHtml(child) : ""}
+              <div>
+                <span class="pill">Available XP</span>
+                <h2>${child ? this.escapeHtml(child.name) : "No player selected"}</h2>
+              </div>
+            </div>
+            <p class="muted">XP spent here is removed from the player balance and added to the activity log.</p>
+          </div>
+          <div class="card hero-side">
+            <span class="pill">Balance</span>
+            <h2>${xp} XP</h2>
+            <p class="muted">${items.length} store rewards available</p>
+          </div>
+        </div>
+        <h2 class="section-title">Rewards</h2>
+        <div class="quest-grid">
+          ${items.length ? items.map((item) => this.storeItemCard(item, child, xp)).join("") : `<div class="card empty-state"><p class="muted">The store shelf is empty right now.</p></div>`}
+        </div>
+      </div>
+    `;
+
+    content.querySelectorAll("[data-store-select-child]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.renderStore(button.dataset.storeSelectChild);
+      });
+    });
+    content.querySelectorAll("[data-buy-store-item]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!child) {
+          this.setNotice("Choose a player before spending XP.", true);
+          return;
+        }
+        const item = this.data.store_items.find((entry) => entry.id === button.dataset.buyStoreItem);
+        const amount = item?.type === "goal" ? this.storeContributionAmount(item, xp) : undefined;
+        await this.runAction(item?.type === "goal" ? "XP contributed to goal." : "Store reward bought.", async () => {
+          await this._hass.callService("chore_quest", "spend_xp", {
+            item_id: button.dataset.buyStoreItem,
+            child_id: child.id,
+            amount,
+          });
+          await this.renderStore(child.id);
+        });
+      });
+    });
+  }
+
   bindInfoButtons(content) {
     content.querySelectorAll("[data-info]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1502,6 +1602,57 @@ class SideQuestPanel extends HTMLElement {
     `;
   }
 
+  storeItemCard(item, child, xp) {
+    const price = Number(item.price || 0);
+    const isGoal = item.type === "goal";
+    const contributed = this.storeGoalContributed(item);
+    const remaining = Math.max(0, price - contributed);
+    const complete = isGoal && remaining <= 0;
+    const canSpend = child && price > 0 && xp >= (isGoal ? Math.min(remaining || price, xp) : price) && !complete;
+    const image = item.image_url
+      ? `<img class="store-image" src="${this.escapeHtml(item.image_url)}" alt="${this.escapeHtml(item.title)}">`
+      : `<div class="store-icon-fallback"><ha-icon icon="${this.escapeHtml(item.icon || "mdi:gift")}"></ha-icon></div>`;
+    const progress = price ? Math.min(100, Math.round((contributed / price) * 100)) : 0;
+    return `
+      <div class="card quest-card">
+        ${image}
+        <div class="quest-copy">
+          <div class="badge-list">
+            <span class="mission-badge">${isGoal ? "Shared Goal" : "Reward"}</span>
+            <span class="pill">${price} XP</span>
+          </div>
+          <h3>${this.escapeHtml(item.title)}</h3>
+          ${item.description ? `<p class="muted">${this.escapeHtml(item.description)}</p>` : ""}
+          ${isGoal ? `
+            <div class="money"><div style="width:${progress}%"></div></div>
+            <strong>${contributed} / ${price} XP funded</strong>
+          ` : ""}
+        </div>
+        <button ${canSpend ? "" : "disabled"} data-buy-store-item="${this.escapeHtml(item.id)}">
+          ${complete ? "Goal funded" : isGoal ? "Contribute XP" : "Spend XP"}
+        </button>
+      </div>
+    `;
+  }
+
+  storeGoalContributed(item) {
+    return Object.values(item.contributions || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  }
+
+  storeContributionAmount(item, availableXp) {
+    const remaining = Math.max(0, Number(item.price || 0) - this.storeGoalContributed(item));
+    const max = Math.min(Number(availableXp || 0), remaining);
+    const value = window.prompt(`How much XP do you want to contribute? Max ${max}`, String(max));
+    if (value === null) {
+      throw new Error("Store contribution cancelled.");
+    }
+    const amount = Math.max(1, Math.min(max, Math.floor(Number(value || 0))));
+    if (!Number.isFinite(amount)) {
+      throw new Error("Please enter a number.");
+    }
+    return amount;
+  }
+
   adminNavButton(section, label, icon, activeSection) {
     return `
       <button class="secondary ${activeSection === section ? "active" : ""}" data-admin-section="${this.escapeHtml(section)}">
@@ -1533,6 +1684,7 @@ class SideQuestPanel extends HTMLElement {
           ${this.adminNavButton("chores", "Personal quests", "mdi:calendar-check", activeAdminSection)}
           ${this.adminNavButton("anyone", "Anyone quests", "mdi:account-multiple-check", activeAdminSection)}
           ${this.adminNavButton("global", "Global missions", "mdi:rocket-launch", activeAdminSection)}
+          ${this.adminNavButton("store", "Store", "mdi:storefront", activeAdminSection)}
           ${this.adminNavButton("money", "Pocket money", "mdi:cash-sync", activeAdminSection)}
           ${this.adminNavButton("ranks", "Ranks", "mdi:shield-star", activeAdminSection)}
           ${this.adminNavButton("notifications", "Notifications", "mdi:bell", activeAdminSection)}
@@ -1653,6 +1805,16 @@ class SideQuestPanel extends HTMLElement {
             </div>
           </section>
 
+          <section class="admin-section ${activeAdminSection === "store" ? "active" : ""}" data-admin-panel="store">
+            <div class="card admin-panel">
+              <h2><ha-icon icon="mdi:storefront"></ha-icon>Store</h2>
+              <p class="muted">Create XP rewards players can buy, or shared goals that everyone can contribute XP toward.</p>
+              <div class="chore-groups">
+                ${this.storeEditorRows()}
+              </div>
+            </div>
+          </section>
+
           <section class="admin-section ${activeAdminSection === "money" ? "active" : ""}" data-admin-panel="money">
             <div class="grid">
               ${this.data.children.map((child) => this.childCard(child)).join("")}
@@ -1759,6 +1921,14 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
+    content.querySelectorAll("[data-toggle-store-editor]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.dataset.toggleStoreEditor;
+        this.expandedStoreItemId = this.expandedStoreItemId === id ? "" : id;
+        await this.renderAdmin();
+      });
+    });
+
     content.querySelector("#child-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       await this.runAction("Child saved.", async () => {
@@ -1845,6 +2015,21 @@ class SideQuestPanel extends HTMLElement {
         }
         await this.runAction("Anyone quest saved.", async () => {
           await this._hass.callService("chore_quest", "upsert_anyone_quest", quest);
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-save-store-row]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const row = button.closest(".chore-editor");
+        const item = this.readStoreRow(row);
+        if (!item.title) {
+          this.setNotice("Store items need a title.", true);
+          return;
+        }
+        await this.runAction("Store item saved.", async () => {
+          await this._hass.callService("chore_quest", "upsert_store_item", item);
           await this.renderAdmin();
         });
       });
@@ -1976,6 +2161,17 @@ class SideQuestPanel extends HTMLElement {
         await this.runAction("Anyone quest deleted.", async () => {
           await this._hass.callService("chore_quest", "delete_anyone_quest", {
             quest_id: button.dataset.deleteAnyoneRow,
+          });
+          await this.renderAdmin();
+        });
+      });
+    });
+
+    content.querySelectorAll("[data-delete-store-row]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Store item deleted.", async () => {
+          await this._hass.callService("chore_quest", "delete_store_item", {
+            item_id: button.dataset.deleteStoreRow,
           });
           await this.renderAdmin();
         });
@@ -2480,6 +2676,77 @@ class SideQuestPanel extends HTMLElement {
     };
   }
 
+  storeEditorRows() {
+    const items = this.data.store_items || [];
+    return `
+      <div class="chore-group">
+        ${items.length ? items.map((item) => this.storeEditorRow(item, false)).join("") : `<p class="muted">No store items yet.</p>`}
+        ${this.storeEditorRow({}, true)}
+      </div>
+    `;
+  }
+
+  storeEditorRow(item, isNew) {
+    const editorId = item.id || "new_store_item";
+    const open = isNew || this.expandedStoreItemId === editorId;
+    const title = item.title || "Add store item";
+    const contributed = this.storeGoalContributed(item);
+    return `
+      <div class="chore-editor ${open ? "open" : ""}" data-store-row="${this.escapeHtml(item.id || "")}">
+        <button type="button" class="secondary chore-editor-header" data-toggle-store-editor="${this.escapeHtml(editorId)}">
+          <strong><ha-icon icon="${this.escapeHtml(item.icon || "mdi:gift")}"></ha-icon>${this.escapeHtml(title)}</strong>
+          <span>${isNew ? "New" : open ? "Hide details" : "Edit"}</span>
+        </button>
+        <div class="chore-editor-body">
+          <div class="chore-editor-line">
+            <label>Title<input data-store-field="title" value="${this.escapeHtml(item.title || "")}" placeholder="Extra screen time"></label>
+            <label>Type
+              <select data-store-field="type">
+                <option value="item" ${(item.type || "item") === "item" ? "selected" : ""}>Store item</option>
+                <option value="goal" ${item.type === "goal" ? "selected" : ""}>Shared goal</option>
+              </select>
+            </label>
+            <label>XP price<input data-store-field="price" type="number" min="0" step="1" value="${Number(item.price || 0)}"></label>
+          </div>
+          <div class="chore-editor-line">
+            <label>Icon${this.iconPickerInput('data-store-field="icon"', item.icon || "mdi:gift", "mdi:gift")}</label>
+            <label>Picture URL<input data-store-field="image_url" value="${this.escapeHtml(item.image_url || "")}" placeholder="/local/sidequest/reward.png"></label>
+            <label>Enabled
+              <select data-store-field="enabled">
+                <option value="true" ${item.enabled !== false ? "selected" : ""}>Yes</option>
+                <option value="false" ${item.enabled === false ? "selected" : ""}>No</option>
+              </select>
+            </label>
+          </div>
+          <div class="chore-editor-line">
+            <label>Description<input data-store-field="description" value="${this.escapeHtml(item.description || "")}" placeholder="What does this unlock?"></label>
+            <div>
+              ${item.type === "goal" ? `<span class="pill">${contributed} / ${Number(item.price || 0)} XP funded</span>` : ""}
+            </div>
+            <div class="chore-editor-actions">
+              <button type="button" data-save-store-row>${isNew ? "Add store item" : "Save"}</button>
+              ${isNew ? "" : `<button type="button" class="danger" data-delete-store-row="${this.escapeHtml(item.id)}">Delete</button>`}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  readStoreRow(row) {
+    const field = (name) => row.querySelector(`[data-store-field="${name}"]`);
+    return {
+      id: row.dataset.storeRow || undefined,
+      title: field("title")?.value.trim() || "",
+      type: field("type")?.value || "item",
+      price: Number(field("price")?.value || 0),
+      icon: field("icon")?.value.trim() || "mdi:gift",
+      image_url: field("image_url")?.value.trim() || "",
+      description: field("description")?.value.trim() || "",
+      enabled: field("enabled")?.value !== "false",
+    };
+  }
+
   taskStatusLabel(task) {
     if (task.status === "approved") return "[done]";
     if (task.status === "pending") return "[approval]";
@@ -2962,7 +3229,15 @@ class SideQuestPanel extends HTMLElement {
     const baseReward = Number(event.base_reward || event.reward || 0);
     const rating = event.rating ? Number(event.rating) : null;
     const created = event.created_at ? new Date(event.created_at).toLocaleString() : "";
-    const canReverse = ["approved", "anyone_approved", "global_task_approved", "global_task_completed", "money_adjustment"].includes(event.type);
+    const canReverse = [
+      "approved",
+      "anyone_approved",
+      "global_task_approved",
+      "global_task_completed",
+      "money_adjustment",
+      "store_purchase",
+      "store_goal_contribution",
+    ].includes(event.type);
     const actionText = canReverse ? "Delete and subtract" : "Delete";
     const ratingText = rating ? ` - ${rating}/5 stars` : "";
     const quantity = Number(event.quantity || 1);
