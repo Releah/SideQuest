@@ -487,12 +487,6 @@ class SideQuestPanel extends HTMLElement {
           color: rgba(247,251,255,0.62);
           font-size: 0.78rem;
         }
-        .notification-list {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-          gap: 10px;
-          margin-top: 12px;
-        }
         .check-row {
           display: grid;
           grid-template-columns: auto minmax(0, 1fr);
@@ -848,7 +842,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-quest-types</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-notification-table</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1704,13 +1698,22 @@ class SideQuestPanel extends HTMLElement {
           <section class="admin-section ${activeAdminSection === "notifications" ? "active" : ""}" data-admin-panel="notifications">
             <div class="card admin-panel">
               <h2><ha-icon icon="mdi:bell"></ha-icon>Notifications</h2>
-              <p class="muted">Choose the Home Assistant notify services that should receive approval requests. Leave everything empty to disable phone notifications.</p>
-              <div class="notification-list">
-                ${this.notificationTargetRows()}
+              <p class="muted">Add the phones or devices that should receive approval requests. Leave the table empty to disable notifications.</p>
+              <div class="task-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Notification device name<span>Friendly name shown here</span></th>
+                      <th>Linked device<span>Home Assistant notify service</span></th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="notification-rows">
+                    ${this.notificationTargetRows()}
+                  </tbody>
+                </table>
               </div>
-              <label style="margin-top:12px">Custom notify services
-                <input id="custom-notify-targets" placeholder="notify.mobile_app_parent_phone, notify.family" value="${this.escapeHtml(this.customNotificationTargets().join(", "))}">
-              </label>
+              <button type="button" class="secondary" id="add-notification-row">Add notification device</button>
               <button type="button" id="save-notifications">Save notifications</button>
             </div>
           </section>
@@ -1953,6 +1956,12 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
+    content.querySelector("#add-notification-row")?.addEventListener("click", () => {
+      this.addNotificationRow(content);
+    });
+
+    this.bindNotificationRowButtons(content);
+
     content.querySelectorAll("[data-delete-chore-row]").forEach((button) => {
       button.addEventListener("click", async () => {
         await this.runAction("Personal quest deleted.", async () => {
@@ -2133,46 +2142,95 @@ class SideQuestPanel extends HTMLElement {
 
   notificationTargets() {
     const settings = this.data.settings || {};
-    if (Array.isArray(settings.notify_targets)) {
-      return settings.notify_targets;
+    const targets = Array.isArray(settings.notify_targets) ? settings.notify_targets : this.data.notify_targets || [];
+    return targets
+      .map((item) => {
+        if (typeof item === "string") {
+          return { name: item, target: item };
+        }
+        return {
+          name: String(item.name || item.target || "").trim(),
+          target: String(item.target || "").trim(),
+        };
+      })
+      .filter((item) => item.target);
+  }
+
+  notificationTargetValues() {
+    return this.notificationTargets().map((item) => item.target);
+  }
+
+  notificationDeviceOptions(selectedTarget) {
+    const services = this.availableNotifyServices();
+    const selected = selectedTarget && !services.includes(selectedTarget) ? [selectedTarget] : [];
+    const options = ["", ...selected, ...services];
+    return options
+      .map((target) => {
+        const label = target || "Choose a notify service";
+        return `<option value="${this.escapeHtml(target)}" ${target === selectedTarget ? "selected" : ""}>${this.escapeHtml(label)}</option>`;
+      })
+      .join("");
+  }
+
+  notificationTargetRows() {
+    const targets = this.notificationTargets();
+    if (!targets.length) {
+      return this.notificationTargetRow({}, true);
     }
-    return this.data.notify_targets || [];
+    return targets.map((target) => this.notificationTargetRow(target, false)).join("");
+  }
+
+  notificationTargetRow(item = {}, isNew = false) {
+    return `
+      <tr data-notification-row>
+        <td><input data-notification-field="name" placeholder="Ryan's phone" value="${this.escapeHtml(item.name || "")}"></td>
+        <td>
+          <select data-notification-field="target">
+            ${this.notificationDeviceOptions(item.target || "")}
+          </select>
+        </td>
+        <td>
+          <button type="button" class="danger" data-remove-notification-row>${isNew ? "Clear" : "Delete"}</button>
+        </td>
+      </tr>
+    `;
   }
 
   availableNotifyServices() {
     return this.data.notify_services || [];
   }
 
-  customNotificationTargets() {
-    const available = new Set(this.availableNotifyServices());
-    return this.notificationTargets().filter((target) => !available.has(target));
-  }
-
-  notificationTargetRows() {
-    const services = this.availableNotifyServices();
-    const selected = new Set(this.notificationTargets());
-    if (!services.length) {
-      return `<p class="muted">No notify services were found. You can still enter custom notify services below.</p>`;
-    }
-    return services
-      .map((target) => `
-        <label class="check-row">
-          <input type="checkbox" data-notify-target="${this.escapeHtml(target)}" ${selected.has(target) ? "checked" : ""}>
-          <span>${this.escapeHtml(target)}</span>
-        </label>
-      `)
-      .join("");
+  addNotificationRow(content) {
+    const tbody = content.querySelector("#notification-rows");
+    if (!tbody) return;
+    tbody.insertAdjacentHTML("beforeend", this.notificationTargetRow({}, true));
+    this.bindNotificationRowButtons(content);
   }
 
   readNotificationTargets(content) {
-    const checked = Array.from(content.querySelectorAll("[data-notify-target]:checked"))
-      .map((input) => input.dataset.notifyTarget)
+    const seen = new Set();
+    return Array.from(content.querySelectorAll("[data-notification-row]"))
+      .map((row) => {
+        const name = row.querySelector('[data-notification-field="name"]')?.value.trim() || "";
+        const target = row.querySelector('[data-notification-field="target"]')?.value.trim() || "";
+        if (!target || seen.has(target)) return null;
+        seen.add(target);
+        return { name: name || target, target };
+      })
       .filter(Boolean);
-    const custom = String(content.querySelector("#custom-notify-targets")?.value || "")
-      .split(",")
-      .map((target) => target.trim())
-      .filter(Boolean);
-    return Array.from(new Set([...checked, ...custom]));
+  }
+
+  bindNotificationRowButtons(content) {
+    content.querySelectorAll("[data-remove-notification-row]").forEach((button) => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", () => {
+        button.closest("[data-notification-row]")?.remove();
+        if (!content.querySelectorAll("[data-notification-row]").length) {
+          this.addNotificationRow(content);
+        }
+      });
+    });
   }
 
   globalMissionRows() {

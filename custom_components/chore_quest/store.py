@@ -669,11 +669,20 @@ class SideQuestStore:
             current["dashboard_users"] = dashboard_users
             current["kitchen_user_ids"] = [item["user_id"] for item in dashboard_users]
         if "notify_targets" in settings:
-            current["notify_targets"] = [
-                target.strip()
-                for target in settings.get("notify_targets", [])
-                if target and target.strip()
-            ]
+            notify_targets = []
+            seen_targets = set()
+            for item in settings.get("notify_targets", []):
+                if isinstance(item, dict):
+                    target = str(item.get("target", "")).strip()
+                    name = str(item.get("name", "")).strip()
+                else:
+                    target = str(item).strip()
+                    name = ""
+                if not target or target in seen_targets:
+                    continue
+                notify_targets.append({"name": name or target, "target": target})
+                seen_targets.add(target)
+            current["notify_targets"] = notify_targets
         if "ranks" in settings:
             ranks = []
             seen_names = set()

@@ -98,8 +98,21 @@ def get_notify_targets(hass: HomeAssistant) -> list[str]:
     if store:
         stored_targets = store.data.get("settings", {}).get("notify_targets", [])
         if stored_targets:
-            return stored_targets
-    return hass.data[DOMAIN].get("notify_targets", NOTIFY_TARGETS_DEFAULT)
+            return _normalise_notify_targets(stored_targets)
+    return _normalise_notify_targets(hass.data[DOMAIN].get("notify_targets", NOTIFY_TARGETS_DEFAULT))
+
+
+def _normalise_notify_targets(targets) -> list[str]:
+    """Return notify service ids from legacy strings or named device rows."""
+    normalised = []
+    for item in targets or []:
+        if isinstance(item, dict):
+            target = str(item.get("target", "")).strip()
+        else:
+            target = str(item).strip()
+        if target:
+            normalised.append(target)
+    return normalised
 
 
 def _register_services(hass: HomeAssistant) -> None:
@@ -623,7 +636,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-quest-types",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-notification-table",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }
