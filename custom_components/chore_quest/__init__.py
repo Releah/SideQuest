@@ -741,7 +741,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-approval-store-rail",
+                "module_url": "/chore_quest_static/panel.js?v=20260627-xp-balance-split",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

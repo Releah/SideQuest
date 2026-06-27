@@ -975,7 +975,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-approval-store-rail</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-xp-balance-split</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1073,6 +1073,7 @@ class SideQuestPanel extends HTMLElement {
     this.data.store_tokens = this.data.store_tokens || [];
     this.data.weekly_totals = this.data.weekly_totals || {};
     this.data.xp_totals = this.data.xp_totals || {};
+    this.data.xp_lifetime_totals = this.data.xp_lifetime_totals || {};
   }
 
   async refreshUsers() {
@@ -1161,8 +1162,8 @@ class SideQuestPanel extends HTMLElement {
     const total = Number(this.data.weekly_totals[child.id] || 0);
     const goal = Number(child.goal || 10);
     const pct = Math.min(100, Math.round((total / goal) * 100));
-    const xp = Number(this.data.xp_totals[child.id] || 0);
-    const rank = this.rankForXp(xp);
+    const lifetimeXp = Number(this.data.xp_lifetime_totals[child.id] ?? this.data.xp_totals[child.id] ?? 0);
+    const rank = this.rankForXp(lifetimeXp);
     const chores = this.me.chores || [];
     const anyoneQuests = this.me.anyone_quests || this.data.anyone_quests_due || [];
     const pendingCount = chores.filter((chore) => this.claimState(chore.id) === "pending").length;
@@ -1191,7 +1192,7 @@ class SideQuestPanel extends HTMLElement {
             <p class="muted">Fill the treasure bar by finishing quests and getting them approved.</p>
             <div class="money"><div style="width:${pct}%"></div></div>
             <strong>GBP ${total.toFixed(2)} / GBP ${goal.toFixed(2)}</strong>
-            ${this.rankBadge(rank, xp)}
+            ${this.rankBadge(rank, lifetimeXp)}
           </div>
           <div class="card hero-side">
             <span class="pill">Today</span>
@@ -1460,14 +1461,14 @@ class SideQuestPanel extends HTMLElement {
             <div class="avatar-row">
               ${child ? this.avatarHtml(child) : ""}
               <div>
-                <span class="pill">Available XP</span>
+                <span class="pill">Spendable XP</span>
                 <h2>${child ? this.escapeHtml(child.name) : "No player selected"}</h2>
               </div>
             </div>
             <p class="muted">XP spent here is removed from the player balance and added to the activity log.</p>
           </div>
           <div class="card hero-side">
-            <span class="pill">Balance</span>
+            <span class="pill">Store balance</span>
             <h2>${xp} XP</h2>
             <p class="muted">${items.length} store rewards available</p>
           </div>
@@ -1592,8 +1593,9 @@ class SideQuestPanel extends HTMLElement {
 
   kitchenChildCard(child, selected) {
     const total = Number(this.data.weekly_totals[child.id] || 0);
-    const xp = Number(this.data.xp_totals[child.id] || 0);
-    const rank = this.rankForXp(xp);
+    const spendableXp = Number(this.data.xp_totals[child.id] || 0);
+    const lifetimeXp = Number(this.data.xp_lifetime_totals[child.id] ?? spendableXp);
+    const rank = this.rankForXp(lifetimeXp);
     const goal = Number(child.goal || 10);
     const pct = Math.min(100, Math.round((total / goal) * 100));
     return `
@@ -1607,7 +1609,8 @@ class SideQuestPanel extends HTMLElement {
         </div>
         <div class="money"><div style="width:${pct}%"></div></div>
         <strong>GBP ${total.toFixed(2)} this week</strong>
-        ${this.rankBadge(rank, xp)}
+        ${this.rankBadge(rank, lifetimeXp)}
+        <div class="muted">${spendableXp} spendable XP</div>
         <div style="margin-top:12px">
           <button class="${selected ? "" : "secondary"}" data-select-child="${this.escapeHtml(child.id)}">${selected ? "Selected" : "Choose"}</button>
         </div>
@@ -2572,7 +2575,8 @@ class SideQuestPanel extends HTMLElement {
 
   childCard(child) {
     const total = Number(this.data.weekly_totals[child.id] || 0);
-    const xp = Number(this.data.xp_totals[child.id] || 0);
+    const spendableXp = Number(this.data.xp_totals[child.id] || 0);
+    const lifetimeXp = Number(this.data.xp_lifetime_totals[child.id] ?? spendableXp);
     const goal = Number(child.goal || 10);
     const pct = Math.min(100, Math.round((total / goal) * 100));
     return `
@@ -2585,8 +2589,9 @@ class SideQuestPanel extends HTMLElement {
         <strong>GBP ${total.toFixed(2)} this week</strong>
         <div class="rank-badge">
           <ha-icon icon="mdi:star-shooting"></ha-icon>
-          <span>${xp} XP</span>
+          <span>${lifetimeXp} rank XP</span>
         </div>
+        <div class="muted">${spendableXp} spendable XP</div>
       </div>
     `;
   }
@@ -2613,6 +2618,7 @@ class SideQuestPanel extends HTMLElement {
     if (!child) return "";
     const money = Number(this.data.weekly_totals[child.id] || 0);
     const xp = Number(this.data.xp_totals[child.id] || 0);
+    const lifetimeXp = Number(this.data.xp_lifetime_totals[child.id] ?? xp);
     return `
       <div class="grid">
         ${this.adjustmentForm({
@@ -2630,7 +2636,7 @@ class SideQuestPanel extends HTMLElement {
         ${this.adjustmentForm({
           id: "xp-form",
           child,
-          title: "XP",
+          title: "Spendable XP",
           icon: "mdi:star-shooting",
           current: xp,
           unit: "XP",
@@ -2642,6 +2648,7 @@ class SideQuestPanel extends HTMLElement {
       </div>
       <div class="card admin-panel">
         <h2><ha-icon icon="mdi:history"></ha-icon>${this.escapeHtml(child.name)} ledger</h2>
+        <p class="muted">Rank XP: ${lifetimeXp} / Spendable XP: ${xp}</p>
         ${this.childBalanceLog(child.id)}
       </div>
     `;
@@ -3455,7 +3462,7 @@ class SideQuestPanel extends HTMLElement {
     return `
       <div class="rank-badge">
         <ha-icon icon="${this.escapeHtml(this.rankIcon(rank))}"></ha-icon>
-        <span>${this.escapeHtml(rank)} - ${Number(xp || 0)} XP</span>
+        <span>${this.escapeHtml(rank)} - ${Number(xp || 0)} rank XP</span>
       </div>
     `;
   }

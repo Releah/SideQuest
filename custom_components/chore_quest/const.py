@@ -32,6 +32,7 @@ DEFAULT_DATA = {
     "weekly_totals": {},
     "last_week_totals": {},
     "xp_totals": {},
+    "xp_lifetime_totals": {},
 }
 
 NOTIFY_TARGETS_DEFAULT = []
