@@ -101,15 +101,15 @@ class SideQuestStore:
         return None
 
     def due_chores_for_child(self, child_id: str, when: datetime | None = None) -> list[dict]:
-        """Return enabled chores that are available to claim."""
+        """Return enabled chores that should be visible to a child."""
         when = when or dt_util.now()
         return [
-            chore
+            self._with_quest_state(chore, when, self.data["claims"], "approved", "chore_id")
             for chore in self.data["chores"]
             if chore.get("child_id") == child_id
             and chore.get("enabled", True)
             and self.is_due(chore, when)
-            and self.is_claimable(chore, when)
+            and self._is_visible_quest(chore, when, self.data["claims"], "approved", "chore_id")
         ]
 
     def is_due(self, chore: dict, when: datetime) -> bool:
@@ -129,14 +129,14 @@ class SideQuestStore:
         return self._is_claimable(chore, when, self.data["claims"], "approved", "chore_id")
 
     def due_anyone_quests(self, when: datetime | None = None) -> list[dict]:
-        """Return enabled shared quests that any child can claim."""
+        """Return enabled shared quests that should be visible."""
         when = when or dt_util.now()
         return [
-            quest
+            self._with_quest_state(quest, when, self.data["anyone_claims"], "anyone_approved", "quest_id")
             for quest in self.data["anyone_quests"]
             if quest.get("enabled", True)
             and self.is_due(quest, when)
-            and self.is_anyone_claimable(quest, when)
+            and self._is_visible_quest(quest, when, self.data["anyone_claims"], "anyone_approved", "quest_id")
         ]
 
     def is_anyone_claimable(self, quest: dict, when: datetime) -> bool:
@@ -170,6 +170,70 @@ class SideQuestStore:
                 return False
 
         return True
+
+    def _is_visible_quest(
+        self,
+        quest: dict,
+        when: datetime,
+        claims: dict,
+        approved_event_type: str,
+        event_id_key: str,
+    ) -> bool:
+        return (
+            self._is_claimable(quest, when, claims, approved_event_type, event_id_key)
+            or self._claim_for_quest(quest["id"], claims, event_id_key) is not None
+            or self._completed_event_for_quest(quest, when, approved_event_type, event_id_key) is not None
+        )
+
+    def _with_quest_state(
+        self,
+        quest: dict,
+        when: datetime,
+        claims: dict,
+        approved_event_type: str,
+        event_id_key: str,
+    ) -> dict:
+        result = dict(quest)
+        claim = self._claim_for_quest(quest["id"], claims, event_id_key)
+        completed = self._completed_event_for_quest(quest, when, approved_event_type, event_id_key)
+        claimable = self._is_claimable(quest, when, claims, approved_event_type, event_id_key)
+        result["sidequest_claimable"] = claimable
+        result["sidequest_state"] = "available"
+        if claim:
+            result["sidequest_state"] = "pending"
+            result["sidequest_claimed_at"] = claim.get("claimed_at")
+            result["sidequest_claimed_by"] = claim.get("child_id")
+        elif completed:
+            result["sidequest_state"] = "completed"
+            result["sidequest_completed_at"] = completed.get("created_at")
+            result["sidequest_completed_by"] = completed.get("child_id")
+        return result
+
+    def _claim_for_quest(self, quest_id: str, claims: dict, event_id_key: str) -> dict | None:
+        if quest_id in claims:
+            return claims[quest_id]
+        return next((claim for claim in claims.values() if claim.get(event_id_key) == quest_id), None)
+
+    def _completed_event_for_quest(
+        self,
+        quest: dict,
+        when: datetime,
+        approved_event_type: str,
+        event_id_key: str,
+    ) -> dict | None:
+        repeat_mode = quest.get("repeat_mode", "once_per_day")
+        for event in self.data["history"]:
+            if event.get("type") != approved_event_type or event.get(event_id_key) != quest["id"]:
+                continue
+            created_at = dt_util.parse_datetime(event.get("created_at", ""))
+            if created_at is None:
+                continue
+            created_at = dt_util.as_local(created_at)
+            if repeat_mode == "once_per_week" and created_at.isocalendar()[:2] == when.isocalendar()[:2]:
+                return event
+            if repeat_mode != "once_per_week" and created_at.date() == when.date():
+                return event
+        return None
 
     async def async_add_child(self, name: str, user_ids: list[str] | None = None, goal: float = 10) -> dict:
         """Add a child."""

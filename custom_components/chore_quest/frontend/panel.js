@@ -845,6 +845,40 @@ class SideQuestPanel extends HTMLElement {
           border: 1px solid rgba(122, 231, 255, 0.52);
           box-shadow: 0 0 20px rgba(0, 194, 255, 0.22);
         }
+        .quest-theme .quest-card.is-completed {
+          border-color: rgba(61, 220, 151, 0.48);
+          background:
+            linear-gradient(160deg, rgba(13, 88, 67, 0.92), rgba(20, 57, 69, 0.86)),
+            rgba(7, 31, 22, 0.86);
+        }
+        .quest-theme .quest-card.is-completed::before {
+          background: linear-gradient(90deg, rgba(61, 220, 151, 0.36), transparent 42%, rgba(255, 207, 92, 0.12));
+        }
+        .quest-theme .quest-card.is-pending {
+          border-color: rgba(255, 207, 92, 0.42);
+          background:
+            linear-gradient(160deg, rgba(88, 68, 13, 0.90), rgba(44, 41, 72, 0.84)),
+            rgba(31, 24, 7, 0.82);
+        }
+        .status-pill {
+          width: fit-content;
+          border-radius: 999px;
+          padding: 5px 9px;
+          font-size: 0.76rem;
+          font-weight: 800;
+          background: rgba(255,255,255,0.10);
+          border: 1px solid rgba(255,255,255,0.16);
+        }
+        .status-pill.done {
+          color: #b8ffd9;
+          border-color: rgba(61, 220, 151, 0.42);
+          background: rgba(61, 220, 151, 0.16);
+        }
+        .status-pill.pending {
+          color: #ffe7a3;
+          border-color: rgba(255, 207, 92, 0.42);
+          background: rgba(255, 207, 92, 0.14);
+        }
         .mission-task-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -1001,7 +1035,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-no-global-missions</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-completed-quest-state</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1192,8 +1226,7 @@ class SideQuestPanel extends HTMLElement {
       .map((room) => ({
         room,
         quests: list.filter((quest) => (quest.room_id || "house") === room.id),
-      }))
-      .filter((group) => group.quests.length);
+      }));
   }
 
   houseQuestGroupsHtml(quests, selectedChild) {
@@ -1205,7 +1238,9 @@ class SideQuestPanel extends HTMLElement {
       <section class="quest-room-group">
         <h3><ha-icon icon="${this.escapeHtml(group.room.icon)}"></ha-icon>${this.escapeHtml(group.room.name)}</h3>
         <div class="quest-grid">
-          ${group.quests.map((quest) => this.anyoneQuestCard(quest, selectedChild)).join("")}
+          ${group.quests.length
+            ? group.quests.map((quest) => this.anyoneQuestCard(quest, selectedChild)).join("")
+            : `<div class="card empty-state"><p class="muted">No open house quests in ${this.escapeHtml(group.room.name)} right now.</p></div>`}
         </div>
       </section>
     `).join("");
@@ -1235,9 +1270,10 @@ class SideQuestPanel extends HTMLElement {
     const rank = this.rankForXp(lifetimeXp);
     const chores = this.me.chores || [];
     const anyoneQuests = this.me.anyone_quests || this.data.anyone_quests_due || [];
-    const pendingCount = chores.filter((chore) => this.claimState(chore.id) === "pending").length;
-    const anyonePendingCount = anyoneQuests.filter((quest) => this.anyoneClaimState(quest.id) === "pending").length;
-    const readyCount = Math.max(0, chores.length + anyoneQuests.length - pendingCount - anyonePendingCount);
+    const pendingCount = chores.filter((chore) => (chore.sidequest_state || this.claimState(chore.id)) === "pending").length;
+    const anyonePendingCount = anyoneQuests.filter((quest) => (quest.sidequest_state || this.anyoneClaimState(quest.id)) === "pending").length;
+    const readyCount = chores.filter((chore) => (chore.sidequest_state || "available") === "available").length
+      + anyoneQuests.filter((quest) => (quest.sidequest_state || "available") === "available").length;
     const avatar = this.avatarHtml(child);
 
     content.innerHTML = `
@@ -1337,7 +1373,7 @@ class SideQuestPanel extends HTMLElement {
           </div>
           <div class="card hero-side">
             <span class="pill">House tasks</span>
-            <h2>${(this.me.anyone_quests || this.data.anyone_quests_due || []).length} open</h2>
+            <h2>${(this.me.anyone_quests || this.data.anyone_quests_due || []).filter((quest) => (quest.sidequest_state || "available") === "available").length} open</h2>
             <p class="muted">${Object.keys(this.data.anyone_claims || {}).length} waiting for approval</p>
           </div>
         </div>
@@ -1748,11 +1784,20 @@ class SideQuestPanel extends HTMLElement {
   }
 
   kidChoreCard(chore) {
-    const pending = this.claimState(chore.id) === "pending";
-    const blocksOnPending = chore.repeat_mode !== "unlimited";
+    const state = chore.sidequest_state || this.claimState(chore.id);
+    const pending = state === "pending";
+    const completed = state === "completed";
+    const claimable = chore.sidequest_claimable !== false;
+    const disabled = pending || !claimable;
     const description = chore.description || "No extra instructions for this quest yet.";
+    const status = pending
+      ? `<span class="status-pill pending">Waiting for approval</span>`
+      : completed
+        ? `<span class="status-pill done">Done ${chore.repeat_mode === "once_per_week" ? "this week" : "today"}</span>`
+        : "";
+    const actionText = pending ? "Waiting for approval" : completed && claimable ? "Claim again" : completed ? "Done" : "I did it";
     return `
-      <div class="card quest-card">
+      <div class="card quest-card ${completed ? "is-completed" : ""} ${pending ? "is-pending" : ""}">
         <div class="quest-top">
           <ha-icon icon="${this.escapeHtml(chore.icon || "mdi:clipboard-check")}"></ha-icon>
           <button class="secondary icon-button" title="Task details" data-info="${this.escapeHtml(chore.id)}">?</button>
@@ -1762,22 +1807,40 @@ class SideQuestPanel extends HTMLElement {
           <span class="pill">${this.escapeHtml(this.scheduleLabel(chore.schedule))} - GBP ${Number(chore.reward).toFixed(2)}</span>
           <div class="badge-list">${this.badgePills(chore.badges || [])}</div>
           <span class="pill">${Number(chore.xp || 0)} XP</span>
+          ${status}
           <p class="muted" data-info-panel="${this.escapeHtml(chore.id)}" style="display:none">${this.escapeHtml(description)}</p>
         </div>
-        <button ${pending && blocksOnPending ? "disabled" : ""} data-claim="${this.escapeHtml(chore.id)}">
-          ${pending && blocksOnPending ? "Waiting for approval" : "I did it"}
+        <button ${disabled ? "disabled" : ""} data-claim="${this.escapeHtml(chore.id)}">
+          ${actionText}
         </button>
       </div>
     `;
   }
 
   anyoneQuestCard(quest, selectedChild) {
-    const pending = this.anyoneClaimState(quest.id) === "pending";
-    const blocksOnPending = quest.repeat_mode !== "unlimited";
+    const state = quest.sidequest_state || this.anyoneClaimState(quest.id);
+    const pending = state === "pending";
+    const completed = state === "completed";
+    const claimable = quest.sidequest_claimable !== false;
+    const disabled = !selectedChild || pending || !claimable;
     const description = quest.description || "This is open to anyone in the house.";
     const room = this.houseRoom(quest.room_id || "house");
+    const status = pending
+      ? `<span class="status-pill pending">Waiting for approval</span>`
+      : completed
+        ? `<span class="status-pill done">Done ${quest.repeat_mode === "once_per_week" ? "this week" : "today"}</span>`
+        : "";
+    const actionText = !selectedChild
+      ? "Choose a player first"
+      : pending
+        ? "Waiting for approval"
+        : completed && claimable
+          ? `Claim again for ${this.escapeHtml(selectedChild.name)}`
+          : completed
+            ? "Done"
+            : `Claim for ${this.escapeHtml(selectedChild.name)}`;
     return `
-      <div class="card quest-card">
+      <div class="card quest-card ${completed ? "is-completed" : ""} ${pending ? "is-pending" : ""}">
         <div class="quest-top">
           <ha-icon icon="${this.escapeHtml(quest.icon || "mdi:account-group")}"></ha-icon>
           <button class="secondary icon-button" title="Quest details" data-info="${this.escapeHtml(`anyone_${quest.id}`)}">?</button>
@@ -1787,10 +1850,11 @@ class SideQuestPanel extends HTMLElement {
           <span class="pill">${this.escapeHtml(room.name)} - ${this.escapeHtml(this.scheduleLabel(quest.schedule))} - GBP ${Number(quest.reward).toFixed(2)}</span>
           <div class="badge-list">${this.badgePills(quest.badges || ["team"])}</div>
           <span class="pill">${Number(quest.xp || 0)} XP</span>
+          ${status}
           <p class="muted" data-info-panel="${this.escapeHtml(`anyone_${quest.id}`)}" style="display:none">${this.escapeHtml(description)}</p>
         </div>
-        <button ${(!selectedChild || (pending && blocksOnPending)) ? "disabled" : ""} data-claim-anyone="${this.escapeHtml(quest.id)}">
-          ${!selectedChild ? "Choose a player first" : pending && blocksOnPending ? "Waiting for approval" : `Claim for ${this.escapeHtml(selectedChild.name)}`}
+        <button ${disabled ? "disabled" : ""} data-claim-anyone="${this.escapeHtml(quest.id)}">
+          ${actionText}
         </button>
       </div>
     `;
