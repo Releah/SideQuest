@@ -697,7 +697,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260628-completed-quest-state",
+                "module_url": "/chore_quest_static/panel.js?v=20260628-panel-height",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

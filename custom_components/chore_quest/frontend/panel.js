@@ -13,10 +13,11 @@ class SideQuestPanel extends HTMLElement {
         :host,
         chore-quest-panel {
           display: block;
-          min-height: 100%;
+          height: 100vh;
+          min-height: 0;
           padding: 24px;
           box-sizing: border-box;
-          overflow: visible;
+          overflow: auto;
           color: #f7fbff;
           background:
             radial-gradient(circle at 18% 14%, rgba(0, 216, 255, 0.18) 0 1px, transparent 2px),
@@ -1035,7 +1036,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-completed-quest-state</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-panel-height</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
