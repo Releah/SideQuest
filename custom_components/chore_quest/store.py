@@ -1,1083 +1,1243 @@
-"""SideQuest integration."""
+"""Persistent SideQuest data store."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import voluptuous as vol
-
-from homeassistant.components import frontend, websocket_api
-from homeassistant.components.http import StaticPathConfig
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.typing import ConfigType
-
-from .const import CONF_NOTIFY_TARGETS, DOMAIN, NOTIFY_TARGETS_DEFAULT
-from .store import SideQuestStore
-
-PLATFORMS: list[Platform] = [Platform.SENSOR]
-
-SERVICE_CLAIM = "claim_chore"
-SERVICE_APPROVE = "approve_chore"
-SERVICE_DENY = "deny_chore"
-SERVICE_ADD_CHILD = "add_child"
-SERVICE_DELETE_CHILD = "delete_child"
-SERVICE_UPSERT_CHORE = "upsert_chore"
-SERVICE_DELETE_CHORE = "delete_chore"
-SERVICE_CLAIM_ANYONE_QUEST = "claim_anyone_quest"
-SERVICE_APPROVE_ANYONE_QUEST = "approve_anyone_quest"
-SERVICE_DENY_ANYONE_QUEST = "deny_anyone_quest"
-SERVICE_UPSERT_ANYONE_QUEST = "upsert_anyone_quest"
-SERVICE_DELETE_ANYONE_QUEST = "delete_anyone_quest"
-SERVICE_UPSERT_GLOBAL_MISSION = "upsert_global_mission"
-SERVICE_DELETE_GLOBAL_MISSION = "delete_global_mission"
-SERVICE_COMPLETE_GLOBAL_MISSION = "complete_global_mission"
-SERVICE_CLAIM_GLOBAL_TASK = "claim_global_task"
-SERVICE_APPROVE_GLOBAL_TASK = "approve_global_task"
-SERVICE_DENY_GLOBAL_TASK = "deny_global_task"
-SERVICE_SAVE_GLOBAL_TEMPLATE = "save_global_mission_template"
-SERVICE_LAUNCH_GLOBAL_TEMPLATE = "launch_global_mission_template"
-SERVICE_DELETE_GLOBAL_TEMPLATE = "delete_global_mission_template"
-SERVICE_ADJUST_MONEY = "adjust_money"
-SERVICE_ADJUST_XP = "adjust_xp"
-SERVICE_UPSERT_STORE_ITEM = "upsert_store_item"
-SERVICE_DELETE_STORE_ITEM = "delete_store_item"
-SERVICE_SPEND_XP = "spend_xp"
-SERVICE_CASH_IN_STORE_TOKEN = "cash_in_store_token"
-SERVICE_DELETE_HISTORY = "delete_history_event"
-SERVICE_UPDATE_SETTINGS = "update_settings"
-SERVICE_WEEKLY_RESET = "weekly_reset"
-
-ATTR_CHORE_ID = "chore_id"
-ATTR_QUEST_ID = "quest_id"
-ATTR_CHILD_ID = "child_id"
-ATTR_EVENT_ID = "event_id"
-ATTR_MISSION_ID = "mission_id"
-ATTR_TASK_ID = "task_id"
-ATTR_ITEM_ID = "item_id"
-ATTR_TOKEN_ID = "token_id"
-
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up SideQuest services and websocket commands."""
-    _register_services(hass)
-    _register_websocket(hass)
-    return True
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up SideQuest from a config entry."""
-    store = SideQuestStore(hass)
-    await store.async_load()
-
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "store": store,
-        "notify_targets": entry.data.get(CONF_NOTIFY_TARGETS, NOTIFY_TARGETS_DEFAULT),
-    }
-    hass.data[DOMAIN]["store"] = store
-    hass.data[DOMAIN]["notify_targets"] = entry.data.get(CONF_NOTIFY_TARGETS, NOTIFY_TARGETS_DEFAULT)
-
-    await _async_register_panel(hass)
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    return True
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload SideQuest."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unload_ok
-
-
-def get_store(hass: HomeAssistant) -> SideQuestStore:
-    """Return the loaded SideQuest store."""
-    return hass.data[DOMAIN]["store"]
-
-
-def get_notify_targets(hass: HomeAssistant) -> list[str]:
-    """Return configured notify actions."""
-    store = hass.data.get(DOMAIN, {}).get("store")
-    if store:
-        stored_targets = store.data.get("settings", {}).get("notify_targets", [])
-        if stored_targets:
-            return _normalise_notify_targets(stored_targets)
-    return _normalise_notify_targets(hass.data[DOMAIN].get("notify_targets", NOTIFY_TARGETS_DEFAULT))
-
-
-def _normalise_notify_targets(targets) -> list[str]:
-    """Return notify service ids from legacy strings or named device rows."""
-    normalised = []
-    for item in targets or []:
-        if isinstance(item, dict):
-            target = str(item.get("target", "")).strip()
-        else:
-            target = str(item).strip()
-        if target:
-            normalised.append(target)
-    return normalised
-
-
-def _register_services(hass: HomeAssistant) -> None:
-    """Register SideQuest service actions."""
-
-    async def claim(call: ServiceCall) -> None:
-        store = get_store(hass)
-        chore_id = call.data[ATTR_CHORE_ID]
-        claim_data = await store.async_claim(chore_id, quantity=call.data.get("quantity", 1))
-        chore = store.get_chore(chore_id)
-        if claim_data.get("status") == "pending":
-            await _async_send_approval_notifications(hass, chore)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "claim", "chore_id": chore_id, "claim": claim_data})
-
-    async def approve(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        chore_id = call.data[ATTR_CHORE_ID]
-        event = await store.async_approve(chore_id, rating=call.data.get("rating", 5))
-        await _async_clear_notifications(hass, chore_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "approve", "chore_id": chore_id, "event": event})
-
-    async def deny(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        chore_id = call.data[ATTR_CHORE_ID]
-        event = await store.async_deny(chore_id)
-        await _async_clear_notifications(hass, chore_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny", "chore_id": chore_id, "event": event})
-
-    async def claim_anyone_quest(call: ServiceCall) -> None:
-        store = get_store(hass)
-        quest_id = call.data[ATTR_QUEST_ID]
-        claim_data = await store.async_claim_anyone_quest(
-            quest_id,
-            call.data[ATTR_CHILD_ID],
-            claimed_by=call.context.user_id,
-            quantity=call.data.get("quantity", 1),
-        )
-        quest = store.get_anyone_quest(quest_id)
-        if claim_data.get("status") == "pending":
-            await _async_send_anyone_approval_notifications(hass, quest)
-        hass.bus.async_fire(
-            f"{DOMAIN}_updated",
-            {"action": "claim_anyone_quest", "quest_id": quest_id, "claim": claim_data},
-        )
-
-    async def approve_anyone_quest(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        quest_id = call.data[ATTR_QUEST_ID]
-        event = await store.async_approve_anyone_quest(
-            quest_id,
-            approved_by=call.context.user_id,
-            rating=call.data.get("rating", 5),
-        )
-        await _async_clear_anyone_notifications(hass, quest_id)
-        hass.bus.async_fire(
-            f"{DOMAIN}_updated",
-            {"action": "approve_anyone_quest", "quest_id": quest_id, "event": event},
-        )
-
-    async def deny_anyone_quest(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        quest_id = call.data[ATTR_QUEST_ID]
-        event = await store.async_deny_anyone_quest(quest_id, denied_by=call.context.user_id)
-        await _async_clear_anyone_notifications(hass, quest_id)
-        hass.bus.async_fire(
-            f"{DOMAIN}_updated",
-            {"action": "deny_anyone_quest", "quest_id": quest_id, "event": event},
-        )
-
-    async def add_child(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        user_ids = [
-            user_id.strip()
-            for user_id in call.data.get("user_ids", "").split(",")
-            if user_id.strip()
-        ]
-        child = await store.async_add_child(
-            call.data["name"],
-            user_ids=user_ids,
-            goal=float(call.data.get("goal", 10)),
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "add_child", "child": child})
-
-    async def delete_child(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        child_id = call.data[ATTR_CHILD_ID]
-        await store.async_delete_child(child_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_child", "child_id": child_id})
-
-    async def upsert_chore(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        chore = await store.async_upsert_chore(dict(call.data))
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_chore", "chore": chore})
-
-    async def upsert_anyone_quest(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        quest = await store.async_upsert_anyone_quest(dict(call.data))
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_anyone_quest", "quest": quest})
-
-    async def upsert_global_mission(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        mission = await store.async_upsert_global_mission(dict(call.data))
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_global_mission", "mission": mission})
-
-    async def delete_global_mission(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        mission_id = call.data[ATTR_MISSION_ID]
-        await store.async_delete_global_mission(mission_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_global_mission", "mission_id": mission_id})
-
-    async def save_global_template(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        template = await get_store(hass).async_save_global_mission_template(call.data[ATTR_MISSION_ID])
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "save_global_template", "template": template})
-
-    async def launch_global_template(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        mission = await get_store(hass).async_launch_global_mission_template(call.data["template_id"])
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "launch_global_template", "mission": mission})
-
-    async def delete_global_template(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        template_id = call.data["template_id"]
-        await get_store(hass).async_delete_global_mission_template(template_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_global_template", "template_id": template_id})
-
-    async def complete_global_mission(call: ServiceCall) -> None:
-        store = get_store(hass)
-        mission_id = call.data[ATTR_MISSION_ID]
-        event = await store.async_complete_global_mission(
-            mission_id,
-            completed_by=call.context.user_id,
-            child_id=call.data.get(ATTR_CHILD_ID),
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "complete_global_mission", "event": event})
-
-    async def claim_global_task(call: ServiceCall) -> None:
-        event = await get_store(hass).async_claim_global_task(
-            call.data[ATTR_MISSION_ID],
-            call.data[ATTR_TASK_ID],
-            call.data[ATTR_CHILD_ID],
-            claimed_by=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "claim_global_task", "event": event})
-
-    async def approve_global_task(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        event = await get_store(hass).async_approve_global_task(
-            call.data[ATTR_MISSION_ID],
-            call.data[ATTR_TASK_ID],
-            approved_by=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "approve_global_task", "event": event})
-
-    async def deny_global_task(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        event = await get_store(hass).async_deny_global_task(
-            call.data[ATTR_MISSION_ID],
-            call.data[ATTR_TASK_ID],
-            denied_by=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny_global_task", "event": event})
-
-    async def adjust_money(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        event = await store.async_adjust_money(
-            call.data[ATTR_CHILD_ID],
-            call.data["amount"],
-            call.data.get("note", ""),
-            user_id=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "adjust_money", "event": event})
-
-    async def adjust_xp(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        event = await store.async_adjust_xp(
-            call.data[ATTR_CHILD_ID],
-            call.data["amount"],
-            call.data.get("note", ""),
-            user_id=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "adjust_xp", "event": event})
-
-    async def upsert_store_item(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        item = await store.async_upsert_store_item(dict(call.data))
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_store_item", "item": item})
-
-    async def delete_store_item(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        item_id = call.data[ATTR_ITEM_ID]
-        await store.async_delete_store_item(item_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_store_item", "item_id": item_id})
-
-    async def spend_xp(call: ServiceCall) -> None:
-        store = get_store(hass)
-        event = await store.async_spend_xp(
-            call.data[ATTR_ITEM_ID],
-            call.data[ATTR_CHILD_ID],
-            amount=call.data.get("amount"),
-            user_id=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "spend_xp", "event": event})
-
-    async def cash_in_store_token(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        event = await store.async_cash_in_store_token(
-            call.data[ATTR_TOKEN_ID],
-            user_id=call.context.user_id,
-        )
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "cash_in_store_token", "event": event})
-
-    async def delete_chore(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        chore_id = call.data[ATTR_CHORE_ID]
-        await store.async_delete_chore(chore_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_chore", "chore_id": chore_id})
-
-    async def delete_anyone_quest(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        quest_id = call.data[ATTR_QUEST_ID]
-        await store.async_delete_anyone_quest(quest_id)
-        await _async_clear_anyone_notifications(hass, quest_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_anyone_quest", "quest_id": quest_id})
-
-    async def delete_history_event(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        event_id = call.data[ATTR_EVENT_ID]
-        event = await store.async_delete_history_event(event_id)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_history_event", "event": event})
-
-    async def update_settings(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        kitchen_user_ids = [
-            user_id.strip()
-            for user_id in call.data.get("kitchen_user_ids", "").split(",")
-            if user_id.strip()
-        ]
-        notify_targets = [
-            target.strip()
-            for target in call.data.get("notify_targets", "").split(",")
-            if target.strip()
-        ]
-        payload = {"kitchen_user_ids": kitchen_user_ids}
-        if "notify_targets" in call.data:
-            payload["notify_targets"] = notify_targets
-        settings = await store.async_update_settings(payload)
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "update_settings", "settings": settings})
-
-    async def weekly_reset(call: ServiceCall) -> None:
-        await _async_require_admin(hass, call)
-        store = get_store(hass)
-        await store.async_weekly_reset()
-        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "weekly_reset"})
-
-    chore_id_schema = vol.Schema({vol.Required(ATTR_CHORE_ID): cv.string})
-    quest_id_schema = vol.Schema({vol.Required(ATTR_QUEST_ID): cv.string})
-    claim_schema = vol.Schema(
-        {
-            vol.Required(ATTR_CHORE_ID): cv.string,
-            vol.Optional("quantity", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-        }
-    )
-    approve_schema = vol.Schema(
-        {
-            vol.Required(ATTR_CHORE_ID): cv.string,
-            vol.Optional("rating", default=5): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
-        }
-    )
-    anyone_claim_schema = vol.Schema(
-        {
-            vol.Required(ATTR_QUEST_ID): cv.string,
-            vol.Required(ATTR_CHILD_ID): cv.string,
-            vol.Optional("quantity", default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-        }
-    )
-    anyone_approve_schema = vol.Schema(
-        {
-            vol.Required(ATTR_QUEST_ID): cv.string,
-            vol.Optional("rating", default=5): vol.All(vol.Coerce(int), vol.Range(min=1, max=5)),
-        }
-    )
-    quest_schema = vol.Schema(
-        {
-            vol.Optional("id"): cv.string,
-            vol.Required("name"): cv.string,
-            vol.Optional("icon", default="mdi:account-group"): cv.string,
-            vol.Optional("description", default=""): cv.string,
-            vol.Optional("reward", default=0): vol.Coerce(float),
-            vol.Optional("badges", default=[]): vol.Any([cv.string], cv.string),
-            vol.Optional("xp", default=10): vol.Coerce(int),
-            vol.Optional("enabled", default=True): cv.boolean,
-            vol.Optional("approval_required", default=True): cv.boolean,
-            vol.Optional("repeat_mode", default="once_per_day"): vol.In(
-                ["once_per_day", "once_per_week", "unlimited"]
-            ),
-            vol.Optional("quantity_enabled", default=False): cv.boolean,
-            vol.Optional("quantity_label", default="How many?"): cv.string,
-            vol.Optional("schedule", default={"type": "daily"}): dict,
-        }
-    )
-    hass.services.async_register(DOMAIN, SERVICE_CLAIM, claim, schema=claim_schema)
-    hass.services.async_register(DOMAIN, SERVICE_APPROVE, approve, schema=approve_schema)
-    hass.services.async_register(DOMAIN, SERVICE_DENY, deny, schema=chore_id_schema)
-    hass.services.async_register(DOMAIN, SERVICE_CLAIM_ANYONE_QUEST, claim_anyone_quest, schema=anyone_claim_schema)
-    hass.services.async_register(DOMAIN, SERVICE_APPROVE_ANYONE_QUEST, approve_anyone_quest, schema=anyone_approve_schema)
-    hass.services.async_register(DOMAIN, SERVICE_DENY_ANYONE_QUEST, deny_anyone_quest, schema=quest_id_schema)
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ADD_CHILD,
-        add_child,
-        schema=vol.Schema(
-            {
-                vol.Required("name"): cv.string,
-                vol.Optional("user_ids", default=""): cv.string,
-                vol.Optional("goal", default=10): vol.Coerce(float),
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_CHILD,
-        delete_child,
-        schema=vol.Schema({vol.Required(ATTR_CHILD_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPSERT_CHORE,
-        upsert_chore,
-        schema=vol.Schema(
-            {
-                vol.Optional("id"): cv.string,
-                vol.Required("child_id"): cv.string,
-                vol.Required("name"): cv.string,
-                vol.Optional("icon", default="mdi:clipboard-check"): cv.string,
-                vol.Optional("description", default=""): cv.string,
-                vol.Optional("reward", default=0): vol.Coerce(float),
-                vol.Optional("badges", default=[]): vol.Any([cv.string], cv.string),
-                vol.Optional("xp", default=10): vol.Coerce(int),
-                vol.Optional("enabled", default=True): cv.boolean,
-                vol.Optional("approval_required", default=True): cv.boolean,
-                vol.Optional("repeat_mode", default="once_per_day"): vol.In(
-                    ["once_per_day", "once_per_week", "unlimited"]
-                ),
-                vol.Optional("quantity_enabled", default=False): cv.boolean,
-                vol.Optional("quantity_label", default="How many?"): cv.string,
-                vol.Optional("schedule", default={"type": "daily"}): dict,
-            }
-        ),
-    )
-    hass.services.async_register(DOMAIN, SERVICE_DELETE_CHORE, delete_chore, schema=chore_id_schema)
-    hass.services.async_register(DOMAIN, SERVICE_UPSERT_ANYONE_QUEST, upsert_anyone_quest, schema=quest_schema)
-    hass.services.async_register(DOMAIN, SERVICE_DELETE_ANYONE_QUEST, delete_anyone_quest, schema=quest_id_schema)
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPSERT_GLOBAL_MISSION,
-        upsert_global_mission,
-        schema=vol.Schema(
-            {
-                vol.Optional("id"): cv.string,
-                vol.Required("name"): cv.string,
-                vol.Optional("description", default=""): cv.string,
-                vol.Optional("icon", default="mdi:rocket-launch"): cv.string,
-                vol.Optional("badges", default=[]): vol.Any([cv.string], cv.string),
-                vol.Optional("xp", default=5): vol.Coerce(int),
-                vol.Optional("tasks", default=[]): vol.Any([dict], cv.string),
-                vol.Optional("enabled", default=True): cv.boolean,
-                vol.Optional("done", default=False): cv.boolean,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_GLOBAL_MISSION,
-        delete_global_mission,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_COMPLETE_GLOBAL_MISSION,
-        complete_global_mission,
-        schema=vol.Schema(
-            {
-                vol.Required(ATTR_MISSION_ID): cv.string,
-                vol.Optional(ATTR_CHILD_ID): cv.string,
-            }
-        ),
-    )
-    mission_task_schema = vol.Schema(
-        {
-            vol.Required(ATTR_MISSION_ID): cv.string,
-            vol.Required(ATTR_TASK_ID): cv.string,
-            vol.Required(ATTR_CHILD_ID): cv.string,
-        }
-    )
-    hass.services.async_register(DOMAIN, SERVICE_CLAIM_GLOBAL_TASK, claim_global_task, schema=mission_task_schema)
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_APPROVE_GLOBAL_TASK,
-        approve_global_task,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string, vol.Required(ATTR_TASK_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DENY_GLOBAL_TASK,
-        deny_global_task,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string, vol.Required(ATTR_TASK_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SAVE_GLOBAL_TEMPLATE,
-        save_global_template,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LAUNCH_GLOBAL_TEMPLATE,
-        launch_global_template,
-        schema=vol.Schema({vol.Required("template_id"): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_GLOBAL_TEMPLATE,
-        delete_global_template,
-        schema=vol.Schema({vol.Required("template_id"): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ADJUST_MONEY,
-        adjust_money,
-        schema=vol.Schema(
-            {
-                vol.Required(ATTR_CHILD_ID): cv.string,
-                vol.Required("amount"): vol.Coerce(float),
-                vol.Optional("note", default=""): cv.string,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ADJUST_XP,
-        adjust_xp,
-        schema=vol.Schema(
-            {
-                vol.Required(ATTR_CHILD_ID): cv.string,
-                vol.Required("amount"): vol.Coerce(int),
-                vol.Optional("note", default=""): cv.string,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPSERT_STORE_ITEM,
-        upsert_store_item,
-        schema=vol.Schema(
-            {
-                vol.Optional("id"): cv.string,
-                vol.Required("title"): cv.string,
-                vol.Optional("description", default=""): cv.string,
-                vol.Optional("image_url", default=""): cv.string,
-                vol.Optional("icon", default="mdi:gift"): cv.string,
-                vol.Optional("type", default="item"): vol.In(["item", "goal"]),
-                vol.Optional("price", default=0): vol.Coerce(int),
-                vol.Optional("enabled", default=True): cv.boolean,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_STORE_ITEM,
-        delete_store_item,
-        schema=vol.Schema({vol.Required(ATTR_ITEM_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SPEND_XP,
-        spend_xp,
-        schema=vol.Schema(
-            {
-                vol.Required(ATTR_ITEM_ID): cv.string,
-                vol.Required(ATTR_CHILD_ID): cv.string,
-                vol.Optional("amount"): vol.Coerce(int),
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CASH_IN_STORE_TOKEN,
-        cash_in_store_token,
-        schema=vol.Schema({vol.Required(ATTR_TOKEN_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_HISTORY,
-        delete_history_event,
-        schema=vol.Schema({vol.Required(ATTR_EVENT_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPDATE_SETTINGS,
-        update_settings,
-        schema=vol.Schema(
-            {
-                vol.Optional("kitchen_user_ids", default=""): cv.string,
-                vol.Optional("notify_targets"): cv.string,
-            }
-        ),
-    )
-    hass.services.async_register(DOMAIN, SERVICE_WEEKLY_RESET, weekly_reset)
-
-
-async def _async_require_admin(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Require an admin user for parent/admin service actions."""
-    user_id = call.context.user_id
-    if user_id is None:
-        return
-    user = await hass.auth.async_get_user(user_id)
-    if user is None or not user.is_admin:
-        raise HomeAssistantError("SideQuest admin action requires a Home Assistant admin user.")
-
-
-async def _async_send_approval_notifications(hass: HomeAssistant, chore: dict) -> None:
-    """Send approval notifications to configured parent phones."""
-    for target in get_notify_targets(hass):
-        await hass.services.async_call(
-            "notify",
-            target.removeprefix("notify."),
-            {
-                "title": "Mission approval",
-                "message": f"{chore['name']} is ready. Rate the mission to approve the payout.",
-                "data": {
-                    "tag": f"chore_quest_{chore['id']}",
-                    "actions": [
-                        {"action": f"CHORE_QUEST_APPROVE_5_{chore['id']}", "title": "5 star"},
-                        {"action": f"CHORE_QUEST_APPROVE_4_{chore['id']}", "title": "4 star"},
-                        {"action": f"CHORE_QUEST_DENY_{chore['id']}", "title": "Deny", "destructive": True},
-                    ],
-                },
-            },
-            blocking=False,
-        )
-
-
-async def _async_clear_notifications(hass: HomeAssistant, chore_id: str) -> None:
-    """Clear stale approval notifications."""
-    for target in get_notify_targets(hass):
-        await hass.services.async_call(
-            "notify",
-            target.removeprefix("notify."),
-            {"message": "clear_notification", "data": {"tag": f"chore_quest_{chore_id}"}},
-            blocking=False,
-        )
-
-
-async def _async_send_anyone_approval_notifications(hass: HomeAssistant, quest: dict) -> None:
-    """Send approval notifications for shared quests."""
-    for target in get_notify_targets(hass):
-        await hass.services.async_call(
-            "notify",
-            target.removeprefix("notify."),
-            {
-                "title": "SideQuest approval",
-                "message": f"{quest['name']} is ready. Rate the shared quest to approve the payout.",
-                "data": {
-                    "tag": f"sidequest_anyone_{quest['id']}",
-                    "actions": [
-                        {"action": f"SIDEQUEST_ANYONE_APPROVE_5_{quest['id']}", "title": "5 star"},
-                        {"action": f"SIDEQUEST_ANYONE_APPROVE_4_{quest['id']}", "title": "4 star"},
-                        {"action": f"SIDEQUEST_ANYONE_DENY_{quest['id']}", "title": "Deny", "destructive": True},
-                    ],
-                },
-            },
-            blocking=False,
-        )
-
-
-async def _async_clear_anyone_notifications(hass: HomeAssistant, quest_id: str) -> None:
-    """Clear stale shared quest approval notifications."""
-    for target in get_notify_targets(hass):
-        await hass.services.async_call(
-            "notify",
-            target.removeprefix("notify."),
-            {"message": "clear_notification", "data": {"tag": f"sidequest_anyone_{quest_id}"}},
-            blocking=False,
-        )
-
-
-async def _async_register_panel(hass: HomeAssistant) -> None:
-    """Register static assets and sidebar panel."""
-    panel_dir = Path(__file__).parent / "frontend"
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig("/chore_quest_static", str(panel_dir), cache_headers=False)]
-    )
-    frontend.async_register_built_in_panel(
-        hass,
-        component_name="custom",
-        sidebar_title="SideQuest",
-        sidebar_icon="mdi:treasure-chest",
-        frontend_url_path="chore-quest",
-        config={
-            "_panel_custom": {
-                "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-approval-store-rail",
-                "embed_iframe": False,
-                "trust_external_script": True,
-            }
-        },
-        require_admin=False,
-    )
-
-
-async def _async_user_profiles(hass: HomeAssistant) -> dict[str, dict]:
-    """Return user profile data the frontend can use for avatars."""
-    users = await hass.auth.async_get_users()
-    person_pictures: dict[str, str] = {}
-    for state in hass.states.async_all("person"):
-        user_id = state.attributes.get("user_id")
-        entity_picture = state.attributes.get("entity_picture")
-        if user_id and entity_picture:
-            person_pictures[user_id] = entity_picture
-
-    profiles: dict[str, dict] = {}
-    for user in users:
-        avatar_url = person_pictures.get(user.id)
-        for attr in ("avatar_url", "picture_url", "picture", "image_url"):
-            if avatar_url:
-                break
-            value = getattr(user, attr, None)
-            if value:
-                avatar_url = value
-                break
-        profiles[user.id] = {
-            "id": user.id,
-            "name": user.name or user.id,
-            "is_admin": bool(user.is_admin),
-            "avatar_url": avatar_url,
-        }
-    return profiles
-
-
-def _notify_services(hass: HomeAssistant) -> list[str]:
-    """Return available notify service names for admin selection."""
-    services = hass.services.async_services().get("notify", {})
-    return sorted(f"notify.{name}" for name in services if not name.startswith("_"))
-
-
-def _register_websocket(hass: HomeAssistant) -> None:
-    """Register websocket commands for the frontend panel."""
-
-    def _connection_is_admin(connection) -> bool:
-        return bool(getattr(getattr(connection, "user", None), "is_admin", False))
-
-    def _send_admin_required(connection, msg) -> bool:
-        if _connection_is_admin(connection):
+from copy import deepcopy
+from datetime import datetime
+import uuid
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
+
+from .const import DEFAULT_DATA, STORAGE_KEY, STORAGE_VERSION
+
+
+class SideQuestStore:
+    """Small persistence layer for children, chores, claims, and history."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.data = deepcopy(DEFAULT_DATA)
+
+    async def async_load(self) -> None:
+        """Load data from Home Assistant storage."""
+        stored = await self._store.async_load()
+        if stored:
+            self.data = self._merge_defaults(stored)
+        for mission in self.data.get("global_missions", []):
+            mission["tasks"] = self._normalise_global_tasks(mission)
+        for template in self.data.get("global_mission_templates", []):
+            template["tasks"] = self._normalise_global_tasks(template)
+        self._normalise_history_xp()
+        self._rebuild_xp_totals()
+        await self.async_save()
+
+    async def async_save(self) -> None:
+        """Save data to Home Assistant storage."""
+        await self._store.async_save(self.data)
+
+    def _merge_defaults(self, stored: dict) -> dict:
+        merged = deepcopy(DEFAULT_DATA)
+        merged.update(stored)
+        for key in (
+            "children",
+            "chores",
+            "anyone_quests",
+            "global_missions",
+            "global_mission_templates",
+            "store_items",
+            "store_tokens",
+            "history",
+        ):
+            merged[key] = stored.get(key, merged.get(key, []))
+        merged["settings"] = {**merged.get("settings", {}), **stored.get("settings", {})}
+        for key in ("claims", "anyone_claims", "weekly_totals", "last_week_totals", "xp_totals", "xp_lifetime_totals"):
+            merged[key] = {**merged.get(key, {}), **stored.get(key, {})}
+        return merged
+
+    def is_kitchen_user(self, user_id: str | None) -> bool:
+        """Return whether a Home Assistant user is linked to the kitchen view."""
+        if not user_id:
             return False
-        connection.send_error(msg["id"], "admin_required", "SideQuest admin access requires an admin user.")
+        settings = self.data.get("settings", {})
+        dashboard_users = settings.get("dashboard_users", [])
+        if any(item.get("user_id") == user_id for item in dashboard_users):
+            return True
+        return user_id in settings.get("kitchen_user_ids", [])
+
+    def get_child_for_user(self, user_id: str | None) -> dict | None:
+        """Return the child linked to a Home Assistant user id."""
+        if not user_id:
+            return None
+        for child in self.data["children"]:
+            if user_id in child.get("user_ids", []):
+                return child
+        return None
+
+    def due_chores_for_child(self, child_id: str, when: datetime | None = None) -> list[dict]:
+        """Return enabled chores that are available to claim."""
+        when = when or dt_util.now()
+        return [
+            chore
+            for chore in self.data["chores"]
+            if chore.get("child_id") == child_id
+            and chore.get("enabled", True)
+            and self.is_due(chore, when)
+            and self.is_claimable(chore, when)
+        ]
+
+    def is_due(self, chore: dict, when: datetime) -> bool:
+        """Return whether a chore is due on the supplied date."""
+        schedule = chore.get("schedule", {"type": "daily"})
+        schedule_type = schedule.get("type", "daily")
+        if schedule_type == "none":
+            return True
+        if schedule_type == "daily":
+            return True
+        if schedule_type == "days":
+            return when.weekday() in schedule.get("days", [])
         return True
 
-    @websocket_api.websocket_command({vol.Required("type"): "chore_quest/list"})
-    @callback
-    def websocket_list(hass: HomeAssistant, connection, msg) -> None:
-        async def _list() -> None:
-            store = get_store(hass)
-            data = dict(store.data)
-            data["user_profiles"] = await _async_user_profiles(hass)
-            data["notify_services"] = _notify_services(hass)
-            data["notify_targets"] = get_notify_targets(hass)
-            data["anyone_quests_due"] = store.due_anyone_quests()
-            connection.send_result(msg["id"], data)
+    def is_claimable(self, chore: dict, when: datetime) -> bool:
+        """Return whether the chore can be claimed again."""
+        return self._is_claimable(chore, when, self.data["claims"], "approved", "chore_id")
 
-        hass.async_create_task(_list())
+    def due_anyone_quests(self, when: datetime | None = None) -> list[dict]:
+        """Return enabled shared quests that any child can claim."""
+        when = when or dt_util.now()
+        return [
+            quest
+            for quest in self.data["anyone_quests"]
+            if quest.get("enabled", True)
+            and self.is_due(quest, when)
+            and self.is_anyone_claimable(quest, when)
+        ]
 
-    @websocket_api.websocket_command({vol.Required("type"): "chore_quest/me"})
-    @callback
-    def websocket_me(hass: HomeAssistant, connection, msg) -> None:
-        store = get_store(hass)
-        user_id = getattr(connection, "user", None).id
-        child = store.get_child_for_user(user_id)
-        chores = store.due_chores_for_child(child["id"]) if child else []
-        connection.send_result(
-            msg["id"],
-            {
-                "child": child,
-                "chores": chores,
-                "anyone_quests": store.due_anyone_quests(),
-                "is_kitchen": store.is_kitchen_user(user_id),
-            },
+    def is_anyone_claimable(self, quest: dict, when: datetime) -> bool:
+        """Return whether a shared quest can be claimed again."""
+        return self._is_claimable(quest, when, self.data["anyone_claims"], "anyone_approved", "quest_id")
+
+    def _is_claimable(
+        self,
+        quest: dict,
+        when: datetime,
+        claims: dict,
+        approved_event_type: str,
+        event_id_key: str,
+    ) -> bool:
+        repeat_mode = quest.get("repeat_mode", "once_per_day")
+        if repeat_mode == "unlimited":
+            return True
+        if quest["id"] in claims:
+            return False
+
+        for event in self.data["history"]:
+            if event.get("type") != approved_event_type or event.get(event_id_key) != quest["id"]:
+                continue
+            created_at = dt_util.parse_datetime(event.get("created_at", ""))
+            if created_at is None:
+                continue
+            created_at = dt_util.as_local(created_at)
+            if repeat_mode == "once_per_day" and created_at.date() == when.date():
+                return False
+            if repeat_mode == "once_per_week" and created_at.isocalendar()[:2] == when.isocalendar()[:2]:
+                return False
+
+        return True
+
+    async def async_add_child(self, name: str, user_ids: list[str] | None = None, goal: float = 10) -> dict:
+        """Add a child."""
+        child_id = self._slug(name)
+        if any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Child already exists: {name}")
+        child = {"id": child_id, "name": name, "user_ids": user_ids or [], "goal": goal}
+        self.data["children"].append(child)
+        self.data["weekly_totals"].setdefault(child_id, 0)
+        self.data["last_week_totals"].setdefault(child_id, 0)
+        self.data["xp_totals"].setdefault(child_id, 0)
+        self.data.setdefault("xp_lifetime_totals", {})
+        self.data["xp_lifetime_totals"].setdefault(child_id, 0)
+        await self.async_save()
+        return child
+
+    async def async_delete_child(self, child_id: str) -> None:
+        """Delete a child, their chores, claims, and totals."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+
+        chore_ids = {chore["id"] for chore in self.data["chores"] if chore.get("child_id") == child_id}
+        self.data["children"] = [child for child in self.data["children"] if child["id"] != child_id]
+        self.data["chores"] = [chore for chore in self.data["chores"] if chore.get("child_id") != child_id]
+        self.data["claims"] = {
+            chore_id: claim
+            for chore_id, claim in self.data["claims"].items()
+            if chore_id not in chore_ids
+        }
+        self.data["anyone_claims"] = {
+            claim_id: claim
+            for claim_id, claim in self.data["anyone_claims"].items()
+            if claim.get("child_id") != child_id
+        }
+        self.data["weekly_totals"].pop(child_id, None)
+        self.data["last_week_totals"].pop(child_id, None)
+        self.data["xp_totals"].pop(child_id, None)
+        self.data.setdefault("xp_lifetime_totals", {})
+        self.data["xp_lifetime_totals"].pop(child_id, None)
+        for token in self.data.get("store_tokens", []):
+            if token.get("child_id") == child_id and token.get("status") == "active":
+                token["status"] = "orphaned"
+        await self.async_save()
+
+    async def async_upsert_store_item(self, item: dict) -> dict:
+        """Create or update a store item or shared goal."""
+        item = dict(item)
+        item.setdefault("id", self._slug(f"store_{item['title']}"))
+        item.setdefault("title", "Store item")
+        item.setdefault("description", "")
+        item.setdefault("image_url", "")
+        item.setdefault("icon", "mdi:gift")
+        item.setdefault("type", "item")
+        item.setdefault("enabled", True)
+        item.setdefault("contributions", {})
+        item["type"] = "goal" if item.get("type") == "goal" else "item"
+        item["price"] = max(0, int(float(item.get("price", 0) or 0)))
+        item["enabled"] = bool(item.get("enabled", True))
+        item["contributions"] = {
+            str(child_id): max(0, int(float(xp or 0)))
+            for child_id, xp in (item.get("contributions") or {}).items()
+        }
+
+        existing = next((entry for entry in self.data["store_items"] if entry["id"] == item["id"]), None)
+        if existing:
+            existing.update(item)
+            result = existing
+        else:
+            self.data["store_items"].append(item)
+            result = item
+        await self.async_save()
+        return result
+
+    async def async_delete_store_item(self, item_id: str) -> None:
+        """Delete a store item."""
+        self.data["store_items"] = [item for item in self.data["store_items"] if item["id"] != item_id]
+        await self.async_save()
+
+    async def async_spend_xp(
+        self,
+        item_id: str,
+        child_id: str,
+        amount: int | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        """Spend XP on a personal item or contribute to a shared goal."""
+        item = self.get_store_item(item_id)
+        if item.get("enabled", True) is False:
+            raise ValueError("This store item is not available.")
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+
+        available = int(self.data.get("xp_totals", {}).get(child_id, 0))
+        price = int(item.get("price", 0))
+        item_type = item.get("type", "item")
+        if item_type == "goal":
+            remaining = max(0, price - self.store_item_total_contributed(item))
+            spend = max(1, int(amount or remaining or price))
+            spend = min(spend, remaining)
+            if spend <= 0:
+                raise ValueError("This goal is already complete.")
+        else:
+            spend = price
+        if spend <= 0:
+            raise ValueError("Store items need an XP price above zero.")
+        if available < spend:
+            raise ValueError("Not enough XP for this store item.")
+
+        self._add_child_xp(child_id, -spend, count_lifetime=False)
+        token = None
+        if item_type == "goal":
+            contributions = item.setdefault("contributions", {})
+            contributions[child_id] = int(contributions.get(child_id, 0)) + spend
+            if self.store_item_total_contributed(item) >= price:
+                item["completed_at"] = dt_util.now().isoformat()
+        else:
+            token = {
+                "id": str(uuid.uuid4()),
+                "item_id": item_id,
+                "item_title": item["title"],
+                "child_id": child_id,
+                "xp": spend,
+                "status": "active",
+                "purchased_at": dt_util.now().isoformat(),
+                "purchased_by": user_id,
+            }
+            self.data.setdefault("store_tokens", [])
+            self.data["store_tokens"].insert(0, token)
+
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "store_goal_contribution" if item_type == "goal" else "store_purchase",
+            "child_id": child_id,
+            "chore_id": item_id,
+            "chore_name": item["title"],
+            "store_item_id": item_id,
+            "store_item_type": item_type,
+            "store_token_id": token.get("id") if token else None,
+            "user_id": user_id,
+            "xp": -spend,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    async def async_cash_in_store_token(
+        self,
+        token_id: str,
+        user_id: str | None = None,
+    ) -> dict:
+        """Mark a purchased store token as cashed in."""
+        token = self.get_store_token(token_id)
+        if token.get("status") != "active":
+            raise ValueError("This store token has already been cashed in.")
+        token["status"] = "redeemed"
+        token["redeemed_at"] = dt_util.now().isoformat()
+        token["redeemed_by"] = user_id
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "store_token_redeemed",
+            "child_id": token["child_id"],
+            "chore_id": token["item_id"],
+            "chore_name": token["item_title"],
+            "store_item_id": token["item_id"],
+            "store_token_id": token["id"],
+            "user_id": user_id,
+            "reward": 0,
+            "xp": 0,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    def store_item_total_contributed(self, item: dict) -> int:
+        """Return total XP contributed to a shared goal."""
+        return sum(int(float(value or 0)) for value in (item.get("contributions") or {}).values())
+
+    def _add_child_xp(self, child_id: str, xp: int, *, count_lifetime: bool = True) -> None:
+        """Adjust spendable XP and optionally lifetime rank XP."""
+        xp = int(xp or 0)
+        self.data.setdefault("xp_totals", {})
+        self.data["xp_totals"][child_id] = max(0, int(self.data["xp_totals"].get(child_id, 0)) + xp)
+        if count_lifetime:
+            self.data.setdefault("xp_lifetime_totals", {})
+            self.data["xp_lifetime_totals"][child_id] = max(
+                0,
+                int(self.data["xp_lifetime_totals"].get(child_id, 0)) + xp,
+            )
+
+    async def async_upsert_chore(self, chore: dict) -> dict:
+        """Create or update a chore."""
+        chore = dict(chore)
+        chore.setdefault("id", self._slug(f"{chore['child_id']}_{chore['name']}"))
+        chore.setdefault("enabled", True)
+        chore.setdefault("approval_required", True)
+        chore.setdefault("schedule", {"type": "daily"})
+        chore.setdefault("repeat_mode", "once_per_day")
+        chore.setdefault("icon", "mdi:clipboard-check")
+        chore.setdefault("description", "")
+        chore.setdefault("badges", [])
+        chore.setdefault("xp", 10)
+        chore.setdefault("quantity_enabled", False)
+        chore.setdefault("quantity_label", "How many?")
+        chore["reward"] = float(chore.get("reward", 0))
+        chore["xp"] = int(float(chore.get("xp", 0)))
+        chore["badges"] = self._normalise_badges(chore.get("badges", []))
+        chore["quantity_enabled"] = bool(chore.get("quantity_enabled", False))
+        chore["quantity_label"] = str(chore.get("quantity_label", "")).strip() or "How many?"
+
+        existing = next((item for item in self.data["chores"] if item["id"] == chore["id"]), None)
+        if existing:
+            existing.update(chore)
+            result = existing
+        else:
+            self.data["chores"].append(chore)
+            result = chore
+
+        await self.async_save()
+        return result
+
+    async def async_delete_chore(self, chore_id: str) -> None:
+        """Delete a chore and any open claim."""
+        self.data["chores"] = [chore for chore in self.data["chores"] if chore["id"] != chore_id]
+        self.data["claims"].pop(chore_id, None)
+        await self.async_save()
+
+    async def async_upsert_anyone_quest(self, quest: dict) -> dict:
+        """Create or update a quest that can be claimed by any child."""
+        quest = dict(quest)
+        quest.setdefault("id", self._slug(f"anyone_{quest['name']}"))
+        quest.setdefault("enabled", True)
+        quest.setdefault("approval_required", True)
+        quest.setdefault("schedule", {"type": "daily"})
+        quest.setdefault("repeat_mode", "once_per_day")
+        quest.setdefault("icon", "mdi:account-group")
+        quest.setdefault("description", "")
+        quest.setdefault("badges", ["team"])
+        quest.setdefault("xp", 10)
+        quest.setdefault("quantity_enabled", False)
+        quest.setdefault("quantity_label", "How many?")
+        quest["reward"] = float(quest.get("reward", 0))
+        quest["xp"] = int(float(quest.get("xp", 0)))
+        quest["badges"] = self._normalise_badges(quest.get("badges", []))
+        quest["quantity_enabled"] = bool(quest.get("quantity_enabled", False))
+        quest["quantity_label"] = str(quest.get("quantity_label", "")).strip() or "How many?"
+
+        existing = next((item for item in self.data["anyone_quests"] if item["id"] == quest["id"]), None)
+        if existing:
+            existing.update(quest)
+            result = existing
+        else:
+            self.data["anyone_quests"].append(quest)
+            result = quest
+
+        await self.async_save()
+        return result
+
+    async def async_delete_anyone_quest(self, quest_id: str) -> None:
+        """Delete a shared quest and any open claims for it."""
+        self.data["anyone_quests"] = [quest for quest in self.data["anyone_quests"] if quest["id"] != quest_id]
+        self.data["anyone_claims"] = {
+            key: claim
+            for key, claim in self.data["anyone_claims"].items()
+            if claim.get("quest_id") != quest_id
+        }
+        await self.async_save()
+
+    async def async_claim_anyone_quest(
+        self,
+        quest_id: str,
+        child_id: str,
+        claimed_by: str | None = None,
+        quantity: int = 1,
+    ) -> dict:
+        """Claim a shared quest for a child."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+        quest = self.get_anyone_quest(quest_id)
+        if not self.is_anyone_claimable(quest, dt_util.now()):
+            raise ValueError("This quest is not currently available to claim.")
+        now = dt_util.now().isoformat()
+        quantity = max(1, int(quantity or 1))
+        claim_id = str(uuid.uuid4())
+        claim = {
+            "id": claim_id,
+            "quest_id": quest_id,
+            "child_id": child_id,
+            "claimed_by": claimed_by,
+            "claimed_at": now,
+            "status": "pending",
+            "quantity": quantity,
+        }
+        if not quest.get("approval_required", True):
+            base_reward = float(quest.get("reward", 0))
+            reward = round(base_reward * quantity, 2)
+            xp = int(quest.get("xp", 0)) * quantity
+            self.data["weekly_totals"][child_id] = round(
+                float(self.data["weekly_totals"].get(child_id, 0)) + reward,
+                2,
+            )
+            self._add_child_xp(child_id, xp)
+            event = self._add_anyone_history(
+                "anyone_approved",
+                quest,
+                {**claim, "status": "approved"},
+                user_id=claimed_by,
+                reward=reward,
+                rating=5,
+                base_reward=reward,
+                xp=xp,
+                badges=quest.get("badges", []),
+                quantity=quantity,
+            )
+            await self.async_save()
+            return event
+        claim_key = claim_id if quest.get("repeat_mode") == "unlimited" else quest_id
+        self.data["anyone_claims"][claim_key] = claim
+        self._add_anyone_history("anyone_claimed", quest, claim, user_id=claimed_by)
+        await self.async_save()
+        return claim
+
+    async def async_approve_anyone_quest(
+        self,
+        quest_id: str,
+        approved_by: str | None = None,
+        rating: int = 5,
+    ) -> dict:
+        """Approve a shared quest and award it to the claiming child."""
+        quest = self.get_anyone_quest(quest_id)
+        claim = self.data["anyone_claims"].pop(quest_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["anyone_claims"].items() if value.get("quest_id") == quest_id),
+                None,
+            )
+            claim = self.data["anyone_claims"].pop(claim_key, None) if claim_key else None
+        if not claim:
+            raise ValueError("This quest has no pending claim.")
+        child_id = claim["child_id"]
+        base_reward = float(quest.get("reward", 0))
+        quantity = max(1, int(claim.get("quantity", 1) or 1))
+        rating = max(1, min(5, int(rating or 5)))
+        reward = round(base_reward * quantity * (rating / 5), 2)
+        xp = round(int(quest.get("xp", 0)) * quantity * (rating / 5))
+        self.data["weekly_totals"][child_id] = round(
+            float(self.data["weekly_totals"].get(child_id, 0)) + reward, 2
         )
+        self._add_child_xp(child_id, xp)
+        event = self._add_anyone_history(
+            "anyone_approved",
+            quest,
+            claim,
+            user_id=approved_by,
+            reward=reward,
+            rating=rating,
+            base_reward=round(base_reward * quantity, 2),
+            xp=xp,
+            badges=quest.get("badges", []),
+            quantity=quantity,
+        )
+        await self.async_save()
+        return event
 
-    @websocket_api.websocket_command({vol.Required("type"): "chore_quest/users"})
-    @callback
-    def websocket_users(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _users() -> None:
-            users = await hass.auth.async_get_users()
-            profiles = await _async_user_profiles(hass)
-            connection.send_result(
-                msg["id"],
-                [
-                    {
-                        "id": user.id,
-                        "name": user.name or user.id,
-                        "is_admin": bool(user.is_admin),
-                        "avatar_url": profiles.get(user.id, {}).get("avatar_url"),
-                    }
-                    for user in users
-                ],
+    async def async_deny_anyone_quest(self, quest_id: str, denied_by: str | None = None) -> dict:
+        """Deny a shared quest claim."""
+        quest = self.get_anyone_quest(quest_id)
+        claim = self.data["anyone_claims"].pop(quest_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["anyone_claims"].items() if value.get("quest_id") == quest_id),
+                None,
             )
+            claim = self.data["anyone_claims"].pop(claim_key, None) if claim_key else None
+        event = self._add_anyone_history("anyone_denied", quest, claim, user_id=denied_by)
+        await self.async_save()
+        return event
 
-        hass.async_create_task(_users())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/child_chores",
-            vol.Required("child_id"): cv.string,
+    async def async_claim(self, chore_id: str, claimed_by: str | None = None, quantity: int = 1) -> dict:
+        """Mark a chore as claimed done and pending approval."""
+        chore = self.get_chore(chore_id)
+        if not self.is_claimable(chore, dt_util.now()):
+            raise ValueError("This chore is not currently available to claim.")
+        now = dt_util.now().isoformat()
+        quantity = max(1, int(quantity or 1))
+        claim_id = str(uuid.uuid4())
+        claim = {
+            "id": claim_id,
+            "chore_id": chore_id,
+            "child_id": chore["child_id"],
+            "claimed_by": claimed_by,
+            "claimed_at": now,
+            "status": "pending",
+            "quantity": quantity,
         }
-    )
-    @callback
-    def websocket_child_chores(hass: HomeAssistant, connection, msg) -> None:
-        store = get_store(hass)
-        child = store.get_child_for_user(getattr(connection, "user", None).id)
-        is_admin = _connection_is_admin(connection)
-        is_kitchen = store.is_kitchen_user(getattr(connection, "user", None).id)
-        if not is_admin and not is_kitchen and (not child or child["id"] != msg["child_id"]):
-            connection.send_error(msg["id"], "not_allowed", "You can only view your own SideQuest chores.")
-            return
-        connection.send_result(msg["id"], store.due_chores_for_child(msg["child_id"]))
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/upsert_chore",
-            vol.Required("chore"): dict,
-        }
-    )
-    @callback
-    def websocket_upsert_chore(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _save() -> None:
-            chore = await get_store(hass).async_upsert_chore(msg["chore"])
-            connection.send_result(msg["id"], chore)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_chore", "chore": chore})
-
-        hass.async_create_task(_save())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/add_child",
-            vol.Required("name"): cv.string,
-            vol.Optional("user_ids", default=""): cv.string,
-            vol.Optional("goal", default=10): vol.Coerce(float),
-        }
-    )
-    @callback
-    def websocket_add_child(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _add() -> None:
-            user_ids = [user_id.strip() for user_id in msg["user_ids"].split(",") if user_id.strip()]
-            child = await get_store(hass).async_add_child(msg["name"], user_ids=user_ids, goal=msg["goal"])
-            connection.send_result(msg["id"], child)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "add_child", "child": child})
-
-        hass.async_create_task(_add())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/delete_child",
-            vol.Required("child_id"): cv.string,
-        }
-    )
-    @callback
-    def websocket_delete_child(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _delete() -> None:
-            await get_store(hass).async_delete_child(msg["child_id"])
-            connection.send_result(msg["id"], {"ok": True})
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_child", "child_id": msg["child_id"]})
-
-        hass.async_create_task(_delete())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/delete_chore",
-            vol.Required("chore_id"): cv.string,
-        }
-    )
-    @callback
-    def websocket_delete_chore(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _delete() -> None:
-            await get_store(hass).async_delete_chore(msg["chore_id"])
-            connection.send_result(msg["id"], {"ok": True})
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_chore", "chore_id": msg["chore_id"]})
-
-        hass.async_create_task(_delete())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/upsert_anyone_quest",
-            vol.Required("quest"): dict,
-        }
-    )
-    @callback
-    def websocket_upsert_anyone_quest(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _save() -> None:
-            quest = await get_store(hass).async_upsert_anyone_quest(msg["quest"])
-            connection.send_result(msg["id"], quest)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_anyone_quest", "quest": quest})
-
-        hass.async_create_task(_save())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/delete_anyone_quest",
-            vol.Required("quest_id"): cv.string,
-        }
-    )
-    @callback
-    def websocket_delete_anyone_quest(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _delete() -> None:
-            await get_store(hass).async_delete_anyone_quest(msg["quest_id"])
-            await _async_clear_anyone_notifications(hass, msg["quest_id"])
-            connection.send_result(msg["id"], {"ok": True})
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_anyone_quest", "quest_id": msg["quest_id"]})
-
-        hass.async_create_task(_delete())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/delete_history_event",
-            vol.Required("event_id"): cv.string,
-        }
-    )
-    @callback
-    def websocket_delete_history_event(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _delete() -> None:
-            event = await get_store(hass).async_delete_history_event(msg["event_id"])
-            connection.send_result(msg["id"], event)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_history_event", "event": event})
-
-        hass.async_create_task(_delete())
-
-    @websocket_api.websocket_command(
-        {
-            vol.Required("type"): "chore_quest/update_settings",
-            vol.Optional("kitchen_user_ids"): list,
-            vol.Optional("dashboard_users"): list,
-            vol.Optional("ranks"): list,
-            vol.Optional("notify_targets"): list,
-        }
-    )
-    @callback
-    def websocket_update_settings(hass: HomeAssistant, connection, msg) -> None:
-        if _send_admin_required(connection, msg):
-            return
-
-        async def _update() -> None:
-            payload = {}
-            for key in ("kitchen_user_ids", "dashboard_users", "ranks", "notify_targets"):
-                if key in msg:
-                    payload[key] = msg[key]
-            settings = await get_store(hass).async_update_settings(payload)
-            connection.send_result(msg["id"], settings)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "update_settings", "settings": settings})
-
-        hass.async_create_task(_update())
-
-    websocket_api.async_register_command(hass, websocket_list)
-    websocket_api.async_register_command(hass, websocket_me)
-    websocket_api.async_register_command(hass, websocket_users)
-    websocket_api.async_register_command(hass, websocket_child_chores)
-    websocket_api.async_register_command(hass, websocket_upsert_chore)
-    websocket_api.async_register_command(hass, websocket_add_child)
-    websocket_api.async_register_command(hass, websocket_delete_child)
-    websocket_api.async_register_command(hass, websocket_delete_chore)
-    websocket_api.async_register_command(hass, websocket_upsert_anyone_quest)
-    websocket_api.async_register_command(hass, websocket_delete_anyone_quest)
-    websocket_api.async_register_command(hass, websocket_delete_history_event)
-    websocket_api.async_register_command(hass, websocket_update_settings)
-
-    async def _handle_mobile_action(event) -> None:
-        action = event.data.get("action", "")
-        prefix_approve = "CHORE_QUEST_APPROVE_"
-        prefix_deny = "CHORE_QUEST_DENY_"
-        prefix_anyone_approve = "SIDEQUEST_ANYONE_APPROVE_"
-        prefix_anyone_deny = "SIDEQUEST_ANYONE_DENY_"
-        if action.startswith(prefix_approve):
-            payload = action.removeprefix(prefix_approve)
-            rating = 5
-            chore_id = payload
-            if len(payload) > 2 and payload[0] in "12345" and payload[1] == "_":
-                rating = int(payload[0])
-                chore_id = payload[2:]
-            event_data = await get_store(hass).async_approve(chore_id, rating=rating)
-            await _async_clear_notifications(hass, chore_id)
-            hass.bus.async_fire(
-                f"{DOMAIN}_updated",
-                {"action": "approve", "chore_id": chore_id, "rating": rating, "event": event_data},
+        if not chore.get("approval_required", True):
+            child_id = chore["child_id"]
+            base_reward = float(chore.get("reward", 0))
+            reward = round(base_reward * quantity, 2)
+            xp = int(chore.get("xp", 0)) * quantity
+            self.data["weekly_totals"][child_id] = round(
+                float(self.data["weekly_totals"].get(child_id, 0)) + reward,
+                2,
             )
-        elif action.startswith(prefix_deny):
-            chore_id = action.removeprefix(prefix_deny)
-            await get_store(hass).async_deny(chore_id)
-            await _async_clear_notifications(hass, chore_id)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny", "chore_id": chore_id})
-        elif action.startswith(prefix_anyone_approve):
-            payload = action.removeprefix(prefix_anyone_approve)
-            rating = 5
-            quest_id = payload
-            if len(payload) > 2 and payload[0] in "12345" and payload[1] == "_":
-                rating = int(payload[0])
-                quest_id = payload[2:]
-            event_data = await get_store(hass).async_approve_anyone_quest(quest_id, rating=rating)
-            await _async_clear_anyone_notifications(hass, quest_id)
-            hass.bus.async_fire(
-                f"{DOMAIN}_updated",
-                {"action": "approve_anyone_quest", "quest_id": quest_id, "rating": rating, "event": event_data},
+            self._add_child_xp(child_id, xp)
+            event = self._add_history(
+                "approved",
+                chore,
+                {**claim, "status": "approved"},
+                user_id=claimed_by,
+                reward=reward,
+                rating=5,
+                base_reward=reward,
+                xp=xp,
+                badges=chore.get("badges", []),
+                quantity=quantity,
             )
-        elif action.startswith(prefix_anyone_deny):
-            quest_id = action.removeprefix(prefix_anyone_deny)
-            await get_store(hass).async_deny_anyone_quest(quest_id)
-            await _async_clear_anyone_notifications(hass, quest_id)
-            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "deny_anyone_quest", "quest_id": quest_id})
+            await self.async_save()
+            return event
+        claim_key = claim_id if chore.get("repeat_mode") == "unlimited" else chore_id
+        self.data["claims"][claim_key] = claim
+        self._add_history("claimed", chore, claim, user_id=claimed_by)
+        await self.async_save()
+        return claim
 
-    hass.bus.async_listen("mobile_app_notification_action", _handle_mobile_action)
+    async def async_approve(self, chore_id: str, approved_by: str | None = None, rating: int = 5) -> dict:
+        """Approve a chore and add the rated reward to the weekly total."""
+        chore = self.get_chore(chore_id)
+        claim = self.data["claims"].pop(chore_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["claims"].items() if value.get("chore_id") == chore_id),
+                None,
+            )
+            claim = self.data["claims"].pop(claim_key, None) if claim_key else None
+        child_id = chore["child_id"]
+        base_reward = float(chore.get("reward", 0))
+        quantity = max(1, int((claim or {}).get("quantity", 1) or 1))
+        rating = max(1, min(5, int(rating or 5)))
+        reward = round(base_reward * quantity * (rating / 5), 2)
+        xp = round(int(chore.get("xp", 0)) * quantity * (rating / 5))
+        self.data["weekly_totals"][child_id] = round(
+            float(self.data["weekly_totals"].get(child_id, 0)) + reward, 2
+        )
+        self._add_child_xp(child_id, xp)
+        event = self._add_history(
+            "approved",
+            chore,
+            claim,
+            user_id=approved_by,
+            reward=reward,
+            rating=rating,
+            base_reward=round(base_reward * quantity, 2),
+            xp=xp,
+            badges=chore.get("badges", []),
+            quantity=quantity,
+        )
+        await self.async_save()
+        return event
+
+    async def async_deny(self, chore_id: str, denied_by: str | None = None) -> dict:
+        """Deny a chore claim."""
+        chore = self.get_chore(chore_id)
+        claim = self.data["claims"].pop(chore_id, None)
+        if claim is None:
+            claim_key = next(
+                (key for key, value in self.data["claims"].items() if value.get("chore_id") == chore_id),
+                None,
+            )
+            claim = self.data["claims"].pop(claim_key, None) if claim_key else None
+        event = self._add_history("denied", chore, claim, user_id=denied_by)
+        await self.async_save()
+        return event
+
+    async def async_weekly_reset(self) -> None:
+        """Save last week totals and reset current totals."""
+        self.data["last_week_totals"] = dict(self.data["weekly_totals"])
+        self.data["weekly_totals"] = {child["id"]: 0 for child in self.data["children"]}
+        await self.async_save()
+
+    async def async_adjust_money(
+        self,
+        child_id: str,
+        amount: float,
+        note: str,
+        user_id: str | None = None,
+    ) -> dict:
+        """Add or subtract pocket money with a note."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+        amount = round(float(amount), 2)
+        current = float(self.data["weekly_totals"].get(child_id, 0))
+        self.data["weekly_totals"][child_id] = round(max(0, current + amount), 2)
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "money_adjustment",
+            "child_id": child_id,
+            "chore_id": "money_adjustment",
+            "chore_name": note or "Pocket money adjustment",
+            "user_id": user_id,
+            "reward": amount,
+            "note": note,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    async def async_adjust_xp(
+        self,
+        child_id: str,
+        amount: int,
+        note: str,
+        user_id: str | None = None,
+    ) -> dict:
+        """Add or subtract XP with a note."""
+        if not any(child["id"] == child_id for child in self.data["children"]):
+            raise ValueError(f"Unknown child_id: {child_id}")
+        amount = int(amount)
+        self._add_child_xp(child_id, amount)
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "xp_adjustment",
+            "child_id": child_id,
+            "chore_id": "xp_adjustment",
+            "chore_name": note or "XP adjustment",
+            "user_id": user_id,
+            "reward": 0,
+            "xp": amount,
+            "note": note,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    async def async_upsert_global_mission(self, mission: dict) -> dict:
+        """Create or update a global household mission."""
+        mission = dict(mission)
+        mission.setdefault("id", self._slug(mission["name"]))
+        mission.setdefault("description", "")
+        mission.setdefault("icon", "mdi:rocket-launch")
+        mission.setdefault("badges", ["team"])
+        mission.setdefault("xp", 5)
+        mission.setdefault("enabled", True)
+        mission.setdefault("done", False)
+        mission.setdefault("tasks", [])
+        mission["xp"] = int(float(mission.get("xp", 0)))
+        mission["badges"] = self._normalise_badges(mission.get("badges", []))
+        mission["tasks"] = self._normalise_global_tasks(mission)
+
+        existing = next((item for item in self.data["global_missions"] if item["id"] == mission["id"]), None)
+        if existing:
+            existing.update(mission)
+            result = existing
+        else:
+            self.data["global_missions"].append(mission)
+            result = mission
+        await self.async_save()
+        return result
+
+    async def async_save_global_mission_template(self, mission_id: str) -> dict:
+        """Save a reusable template from an existing global mission."""
+        mission = self.get_global_mission(mission_id)
+        template = deepcopy(mission)
+        template["id"] = self._slug(f"template_{mission['name']}")
+        template["source_mission_id"] = mission_id
+        template.pop("done", None)
+        template.pop("completed_by", None)
+        template.pop("completed_child_id", None)
+        template.pop("completed_at", None)
+        for task in template.get("tasks", []):
+            for key in ("status", "claimed_by", "claimed_child_id", "claimed_at", "approved_by", "approved_at", "completed_at"):
+                task.pop(key, None)
+        existing = next((item for item in self.data["global_mission_templates"] if item["id"] == template["id"]), None)
+        if existing:
+            existing.update(template)
+            result = existing
+        else:
+            self.data["global_mission_templates"].append(template)
+            result = template
+        await self.async_save()
+        return result
+
+    async def async_launch_global_mission_template(self, template_id: str) -> dict:
+        """Create a fresh global mission from a saved template."""
+        template = next((item for item in self.data["global_mission_templates"] if item["id"] == template_id), None)
+        if not template:
+            raise ValueError(f"Unknown template_id: {template_id}")
+        mission = deepcopy(template)
+        mission["id"] = self._slug(f"{mission['name']}_{uuid.uuid4().hex[:6]}")
+        mission["done"] = False
+        mission["enabled"] = True
+        for task in mission.get("tasks", []):
+            task["status"] = "open"
+            for key in ("claimed_by", "claimed_child_id", "claimed_at", "approved_by", "approved_at", "completed_at"):
+                task.pop(key, None)
+        self.data["global_missions"].append(mission)
+        await self.async_save()
+        return mission
+
+    async def async_delete_global_mission_template(self, template_id: str) -> None:
+        """Delete a saved global mission template."""
+        before = len(self.data["global_mission_templates"])
+        self.data["global_mission_templates"] = [
+            template for template in self.data["global_mission_templates"] if template["id"] != template_id
+        ]
+        if len(self.data["global_mission_templates"]) == before:
+            raise ValueError(f"Unknown template_id: {template_id}")
+        await self.async_save()
+
+    async def async_delete_global_mission(self, mission_id: str) -> None:
+        """Delete a global household mission."""
+        self.data["global_missions"] = [
+            mission for mission in self.data["global_missions"] if mission["id"] != mission_id
+        ]
+        await self.async_save()
+
+    async def async_complete_global_mission(
+        self,
+        mission_id: str,
+        completed_by: str | None = None,
+        child_id: str | None = None,
+    ) -> dict:
+        """Mark a global mission complete without changing pocket money."""
+        mission = self.get_global_mission(mission_id)
+        xp = int(mission.get("xp", 0))
+        if child_id:
+            if not any(child["id"] == child_id for child in self.data["children"]):
+                raise ValueError(f"Unknown child_id: {child_id}")
+            self._add_child_xp(child_id, xp)
+        mission["done"] = True
+        mission["completed_by"] = completed_by
+        mission["completed_child_id"] = child_id
+        mission["completed_at"] = dt_util.now().isoformat()
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": "global_mission_completed",
+            "child_id": child_id or "house",
+            "chore_id": mission_id,
+            "chore_name": mission["name"],
+            "user_id": completed_by,
+            "reward": 0,
+            "xp": xp,
+            "badges": mission.get("badges", []),
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        await self.async_save()
+        return event
+
+    async def async_claim_global_task(
+        self,
+        mission_id: str,
+        task_id: str,
+        child_id: str,
+        claimed_by: str | None = None,
+    ) -> dict:
+        """Claim or complete a global mission task."""
+        mission = self.get_global_mission(mission_id)
+        task = self.get_global_task(mission, task_id)
+        if task.get("status") in ("pending", "approved", "done"):
+            raise ValueError("This mission task has already been claimed or completed.")
+        task["claimed_by"] = claimed_by
+        task["claimed_child_id"] = child_id
+        task["claimed_at"] = dt_util.now().isoformat()
+        if task.get("approval_required", True):
+            task["status"] = "pending"
+            event_type = "global_task_claimed"
+        else:
+            self._complete_global_task(mission, task, child_id, approved_by=claimed_by)
+            event_type = "global_task_completed"
+        event = self._global_task_event(event_type, mission, task, child_id, user_id=claimed_by)
+        await self.async_save()
+        return event
+
+    async def async_approve_global_task(
+        self,
+        mission_id: str,
+        task_id: str,
+        approved_by: str | None = None,
+    ) -> dict:
+        """Approve a claimed global mission task."""
+        mission = self.get_global_mission(mission_id)
+        task = self.get_global_task(mission, task_id)
+        child_id = task.get("claimed_child_id")
+        if not child_id:
+            raise ValueError("Mission task has not been claimed by a player.")
+        self._complete_global_task(mission, task, child_id, approved_by=approved_by)
+        event = self._global_task_event("global_task_approved", mission, task, child_id, user_id=approved_by)
+        await self.async_save()
+        return event
+
+    async def async_deny_global_task(
+        self,
+        mission_id: str,
+        task_id: str,
+        denied_by: str | None = None,
+    ) -> dict:
+        """Deny and reopen a claimed global mission task."""
+        mission = self.get_global_mission(mission_id)
+        task = self.get_global_task(mission, task_id)
+        child_id = task.get("claimed_child_id")
+        event = self._global_task_event("global_task_denied", mission, task, child_id or "house", user_id=denied_by)
+        for key in ("claimed_by", "claimed_child_id", "claimed_at"):
+            task.pop(key, None)
+        task["status"] = "open"
+        await self.async_save()
+        return event
+
+    async def async_delete_history_event(self, event_id: str) -> dict:
+        """Delete a history event and reverse its current-week reward if needed."""
+        event = next((item for item in self.data["history"] if item["id"] == event_id), None)
+        if not event:
+            raise ValueError(f"Unknown history event_id: {event_id}")
+
+        self.data["history"] = [item for item in self.data["history"] if item["id"] != event_id]
+
+        if event.get("type") in ("approved", "anyone_approved", "money_adjustment", "global_task_approved", "global_task_completed"):
+            child_id = event["child_id"]
+            reward = float(event.get("reward", 0))
+            current = float(self.data["weekly_totals"].get(child_id, 0))
+            self.data["weekly_totals"][child_id] = round(max(0, current - reward), 2)
+        if event.get("type") in (
+            "approved",
+            "anyone_approved",
+            "global_task_approved",
+            "global_task_completed",
+            "xp_adjustment",
+            "store_purchase",
+            "store_goal_contribution",
+        ):
+            child_id = event["child_id"]
+            xp = int(event.get("xp", 0))
+            self._add_child_xp(
+                child_id,
+                -xp,
+                count_lifetime=event.get("type") in (
+                    "approved",
+                    "anyone_approved",
+                    "global_task_approved",
+                    "global_task_completed",
+                    "xp_adjustment",
+                ),
+            )
+            if event.get("type") == "store_goal_contribution":
+                item = next(
+                    (store_item for store_item in self.data["store_items"] if store_item["id"] == event.get("store_item_id")),
+                    None,
+                )
+                if item:
+                    contributions = item.setdefault("contributions", {})
+                    contributions[child_id] = max(0, int(contributions.get(child_id, 0)) + xp)
+                    if self.store_item_total_contributed(item) < int(item.get("price", 0)):
+                        item.pop("completed_at", None)
+            if event.get("type") == "store_purchase" and event.get("store_token_id"):
+                self.data["store_tokens"] = [
+                    token for token in self.data.get("store_tokens", []) if token["id"] != event.get("store_token_id")
+                ]
+        if event.get("type") == "store_token_redeemed" and event.get("store_token_id"):
+            token = next(
+                (store_token for store_token in self.data.get("store_tokens", []) if store_token["id"] == event.get("store_token_id")),
+                None,
+            )
+            if token:
+                token["status"] = "active"
+                token.pop("redeemed_at", None)
+                token.pop("redeemed_by", None)
+
+        await self.async_save()
+        return event
+
+    async def async_update_settings(self, settings: dict) -> dict:
+        """Update app settings."""
+        current = self.data.setdefault("settings", {})
+        if "kitchen_user_ids" in settings:
+            current["kitchen_user_ids"] = [
+                user_id.strip()
+                for user_id in settings.get("kitchen_user_ids", [])
+                if user_id and user_id.strip()
+            ]
+        if "dashboard_users" in settings:
+            dashboard_users = []
+            seen_user_ids = set()
+            for item in settings.get("dashboard_users", []):
+                user_id = str(item.get("user_id", "")).strip()
+                if not user_id or user_id in seen_user_ids:
+                    continue
+                name = str(item.get("name", "")).strip()
+                dashboard_users.append({"user_id": user_id, "name": name})
+                seen_user_ids.add(user_id)
+            current["dashboard_users"] = dashboard_users
+            current["kitchen_user_ids"] = [item["user_id"] for item in dashboard_users]
+        if "notify_targets" in settings:
+            notify_targets = []
+            seen_targets = set()
+            for item in settings.get("notify_targets", []):
+                if isinstance(item, dict):
+                    target = str(item.get("target", "")).strip()
+                    name = str(item.get("name", "")).strip()
+                else:
+                    target = str(item).strip()
+                    name = ""
+                if not target or target in seen_targets:
+                    continue
+                notify_targets.append({"name": name or target, "target": target})
+                seen_targets.add(target)
+            current["notify_targets"] = notify_targets
+        if "ranks" in settings:
+            ranks = []
+            seen_names = set()
+            for item in settings.get("ranks", []):
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                name_key = name.lower()
+                if name_key in seen_names:
+                    continue
+                icon = str(item.get("icon", "")).strip() or "mdi:rocket-outline"
+                try:
+                    xp = max(0, int(float(item.get("xp", 0))))
+                except (TypeError, ValueError):
+                    xp = 0
+                ranks.append({"name": name, "xp": xp, "icon": icon})
+                seen_names.add(name_key)
+            current["ranks"] = sorted(ranks, key=lambda rank: rank["xp"])
+        await self.async_save()
+        return current
+
+    def get_chore(self, chore_id: str) -> dict:
+        """Return a chore by id."""
+        for chore in self.data["chores"]:
+            if chore["id"] == chore_id:
+                return chore
+        raise ValueError(f"Unknown chore_id: {chore_id}")
+
+    def get_anyone_quest(self, quest_id: str) -> dict:
+        """Return a shared quest by id."""
+        for quest in self.data["anyone_quests"]:
+            if quest["id"] == quest_id:
+                return quest
+        raise ValueError(f"Unknown quest_id: {quest_id}")
+
+    def get_store_item(self, item_id: str) -> dict:
+        """Return a store item by id."""
+        for item in self.data["store_items"]:
+            if item["id"] == item_id:
+                return item
+        raise ValueError(f"Unknown store item_id: {item_id}")
+
+    def get_store_token(self, token_id: str) -> dict:
+        """Return a store token by id."""
+        for token in self.data.get("store_tokens", []):
+            if token["id"] == token_id:
+                return token
+        raise ValueError(f"Unknown store token_id: {token_id}")
+
+    def _get_chore_or_none(self, chore_id: str | None) -> dict | None:
+        """Return a chore by id, if it still exists."""
+        if not chore_id:
+            return None
+        for chore in self.data["chores"]:
+            if chore["id"] == chore_id:
+                return chore
+        return None
+
+    def _normalise_history_xp(self) -> None:
+        """Backfill missing XP on old approved chore history entries."""
+        for event in self.data.get("history", []):
+            if event.get("type") in ("store_purchase", "store_goal_contribution"):
+                event["xp"] = -abs(int(float(event.get("xp", 0) or 0)))
+                continue
+            if event.get("type") not in ("approved", "anyone_approved"):
+                continue
+            quest = self._get_chore_or_none(event.get("chore_id")) or self._get_anyone_quest_or_none(event.get("quest_id"))
+            if not quest:
+                continue
+            quest_xp = int(float(quest.get("xp", 0) or 0))
+            if not quest_xp:
+                continue
+            current_xp = int(float(event.get("xp", 0) or 0))
+            if current_xp:
+                continue
+            rating = max(1, min(5, int(event.get("rating") or 5)))
+            quantity = max(1, int(event.get("quantity", 1) or 1))
+            event["xp"] = round(quest_xp * quantity * (rating / 5))
+
+    def _rebuild_xp_totals(self) -> None:
+        """Rebuild spendable and lifetime XP totals from history."""
+        spendable = {child["id"]: 0 for child in self.data.get("children", [])}
+        lifetime = {child["id"]: 0 for child in self.data.get("children", [])}
+        for event in self.data.get("history", []):
+            if event.get("type") not in (
+                "approved",
+                "anyone_approved",
+                "global_task_approved",
+                "global_task_completed",
+                "xp_adjustment",
+                "store_purchase",
+                "store_goal_contribution",
+            ):
+                continue
+            child_id = event.get("child_id")
+            if not child_id:
+                continue
+            xp = int(float(event.get("xp", 0) or 0))
+            spendable[child_id] = int(spendable.get(child_id, 0)) + xp
+            if event.get("type") in (
+                "approved",
+                "anyone_approved",
+                "global_task_approved",
+                "global_task_completed",
+                "xp_adjustment",
+            ) and xp > 0:
+                lifetime[child_id] = int(lifetime.get(child_id, 0)) + xp
+        self.data["xp_totals"] = {child_id: max(0, xp) for child_id, xp in spendable.items()}
+        self.data["xp_lifetime_totals"] = lifetime
+
+    def get_global_mission(self, mission_id: str) -> dict:
+        """Return a global mission by id."""
+        for mission in self.data["global_missions"]:
+            if mission["id"] == mission_id:
+                return mission
+        raise ValueError(f"Unknown global mission_id: {mission_id}")
+
+    def get_global_task(self, mission: dict, task_id: str) -> dict:
+        """Return a global mission task by id."""
+        for task in mission.get("tasks", []):
+            if task["id"] == task_id:
+                return task
+        raise ValueError(f"Unknown global task_id: {task_id}")
+
+    def _add_history(
+        self,
+        event_type: str,
+        chore: dict,
+        claim: dict | None,
+        user_id: str | None = None,
+        reward: float = 0,
+        rating: int | None = None,
+        base_reward: float | None = None,
+        xp: int = 0,
+        badges: list[str] | None = None,
+        quantity: int = 1,
+    ) -> dict:
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "chore_id": chore["id"],
+            "chore_name": chore["name"],
+            "child_id": chore["child_id"],
+            "user_id": user_id,
+            "reward": reward,
+            "rating": rating,
+            "base_reward": base_reward,
+            "xp": xp,
+            "badges": badges or [],
+            "quantity": quantity,
+            "claim": claim,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        return event
+
+    def _get_anyone_quest_or_none(self, quest_id: str | None) -> dict | None:
+        """Return a shared quest by id, if it still exists."""
+        if not quest_id:
+            return None
+        for quest in self.data["anyone_quests"]:
+            if quest["id"] == quest_id:
+                return quest
+        return None
+
+    def _add_anyone_history(
+        self,
+        event_type: str,
+        quest: dict,
+        claim: dict | None,
+        user_id: str | None = None,
+        reward: float = 0,
+        rating: int | None = None,
+        base_reward: float | None = None,
+        xp: int = 0,
+        badges: list[str] | None = None,
+        quantity: int = 1,
+    ) -> dict:
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "quest_id": quest["id"],
+            "quest_name": quest["name"],
+            "chore_id": quest["id"],
+            "chore_name": quest["name"],
+            "child_id": (claim or {}).get("child_id"),
+            "user_id": user_id,
+            "reward": reward,
+            "rating": rating,
+            "base_reward": base_reward,
+            "xp": xp,
+            "badges": badges or [],
+            "quantity": quantity,
+            "claim": claim,
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        return event
+
+    def _slug(self, value: str) -> str:
+        return "".join(ch if ch.isalnum() else "_" for ch in value.strip().lower()).strip("_")
+
+    def _normalise_badges(self, badges) -> list[str]:
+        if isinstance(badges, str):
+            badges = [badge.strip() for badge in badges.split(",")]
+        return [str(badge).strip().lower() for badge in badges if str(badge).strip()]
+
+    def _normalise_global_tasks(self, mission: dict) -> list[dict]:
+        tasks = mission.get("tasks") or []
+        if isinstance(tasks, str):
+            tasks = [line.strip() for line in tasks.splitlines() if line.strip()]
+        if not tasks:
+            tasks = [
+                {
+                    "name": mission["name"],
+                    "description": mission.get("description", ""),
+                    "xp": mission.get("xp", 5),
+                    "reward": 0,
+                    "approval_required": False,
+                }
+            ]
+
+        normalised = []
+        for index, task in enumerate(tasks, start=1):
+            if isinstance(task, str):
+                task = {"name": task}
+            task = dict(task)
+            task.setdefault("id", self._slug(f"{index}_{task.get('name', 'task')}"))
+            task.setdefault("name", f"Task {index}")
+            task.setdefault("description", "")
+            task.setdefault("xp", mission.get("xp", 5))
+            task.setdefault("reward", 0)
+            task.setdefault("approval_required", True)
+            task.setdefault("status", "open")
+            task["xp"] = int(float(task.get("xp", 0)))
+            task["reward"] = float(task.get("reward", 0))
+            task["approval_required"] = bool(task.get("approval_required", True))
+            normalised.append(task)
+        return normalised
+
+    def _complete_global_task(self, mission: dict, task: dict, child_id: str, approved_by: str | None = None) -> None:
+        task["status"] = "approved"
+        task["approved_by"] = approved_by
+        task["approved_at"] = dt_util.now().isoformat()
+        task["completed_at"] = task["approved_at"]
+        reward = round(float(task.get("reward", 0)), 2)
+        xp = int(task.get("xp", 0))
+        self._add_child_xp(child_id, xp)
+        if reward:
+            current = float(self.data["weekly_totals"].get(child_id, 0))
+            self.data["weekly_totals"][child_id] = round(current + reward, 2)
+        if mission.get("tasks") and all(item.get("status") == "approved" for item in mission["tasks"]):
+            mission["done"] = True
+            mission["completed_at"] = dt_util.now().isoformat()
+
+    def _global_task_event(
+        self,
+        event_type: str,
+        mission: dict,
+        task: dict,
+        child_id: str,
+        user_id: str | None = None,
+    ) -> dict:
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "child_id": child_id,
+            "chore_id": mission["id"],
+            "task_id": task["id"],
+            "chore_name": f"{mission['name']} - {task['name']}",
+            "user_id": user_id,
+            "reward": float(task.get("reward", 0)) if event_type in ("global_task_approved", "global_task_completed") else 0,
+            "xp": int(task.get("xp", 0)) if event_type in ("global_task_approved", "global_task_completed") else 0,
+            "badges": mission.get("badges", []),
+            "created_at": dt_util.now().isoformat(),
+        }
+        self.data["history"].insert(0, event)
+        self.data["history"] = self.data["history"][:500]
+        return event
