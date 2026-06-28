@@ -32,6 +32,8 @@ SERVICE_APPROVE_ANYONE_QUEST = "approve_anyone_quest"
 SERVICE_DENY_ANYONE_QUEST = "deny_anyone_quest"
 SERVICE_UPSERT_ANYONE_QUEST = "upsert_anyone_quest"
 SERVICE_DELETE_ANYONE_QUEST = "delete_anyone_quest"
+SERVICE_UPSERT_HOUSE_ROOM = "upsert_house_room"
+SERVICE_DELETE_HOUSE_ROOM = "delete_house_room"
 SERVICE_UPSERT_GLOBAL_MISSION = "upsert_global_mission"
 SERVICE_DELETE_GLOBAL_MISSION = "delete_global_mission"
 SERVICE_COMPLETE_GLOBAL_MISSION = "complete_global_mission"
@@ -58,6 +60,7 @@ ATTR_EVENT_ID = "event_id"
 ATTR_MISSION_ID = "mission_id"
 ATTR_TASK_ID = "task_id"
 ATTR_ITEM_ID = "item_id"
+ATTR_ROOM_ID = "room_id"
 ATTR_TOKEN_ID = "token_id"
 
 
@@ -226,6 +229,17 @@ def _register_services(hass: HomeAssistant) -> None:
         store = get_store(hass)
         quest = await store.async_upsert_anyone_quest(dict(call.data))
         hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_anyone_quest", "quest": quest})
+
+    async def upsert_house_room(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        room = await get_store(hass).async_upsert_house_room(dict(call.data))
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_house_room", "room": room})
+
+    async def delete_house_room(call: ServiceCall) -> None:
+        await _async_require_admin(hass, call)
+        room_id = call.data[ATTR_ROOM_ID]
+        await get_store(hass).async_delete_house_room(room_id)
+        hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_house_room", "room_id": room_id})
 
     async def upsert_global_mission(call: ServiceCall) -> None:
         await _async_require_admin(hass, call)
@@ -424,6 +438,7 @@ def _register_services(hass: HomeAssistant) -> None:
     quest_schema = vol.Schema(
         {
             vol.Optional("id"): cv.string,
+            vol.Optional("room_id", default="house"): cv.string,
             vol.Required("name"): cv.string,
             vol.Optional("icon", default="mdi:account-group"): cv.string,
             vol.Optional("description", default=""): cv.string,
@@ -490,6 +505,20 @@ def _register_services(hass: HomeAssistant) -> None:
         ),
     )
     hass.services.async_register(DOMAIN, SERVICE_DELETE_CHORE, delete_chore, schema=chore_id_schema)
+    room_schema = vol.Schema(
+        {
+            vol.Optional("id"): cv.string,
+            vol.Required("name"): cv.string,
+            vol.Optional("icon", default="mdi:home"): cv.string,
+        }
+    )
+    hass.services.async_register(DOMAIN, SERVICE_UPSERT_HOUSE_ROOM, upsert_house_room, schema=room_schema)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_HOUSE_ROOM,
+        delete_house_room,
+        schema=vol.Schema({vol.Required(ATTR_ROOM_ID): cv.string}),
+    )
     hass.services.async_register(DOMAIN, SERVICE_UPSERT_ANYONE_QUEST, upsert_anyone_quest, schema=quest_schema)
     hass.services.async_register(DOMAIN, SERVICE_DELETE_ANYONE_QUEST, delete_anyone_quest, schema=quest_id_schema)
     hass.services.async_register(
@@ -741,7 +770,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260627-xp-balance-split",
+                "module_url": "/chore_quest_static/panel.js?v=20260628-house-quest-rooms",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }
@@ -946,6 +975,42 @@ def _register_websocket(hass: HomeAssistant) -> None:
 
     @websocket_api.websocket_command(
         {
+            vol.Required("type"): "chore_quest/upsert_house_room",
+            vol.Required("room"): dict,
+        }
+    )
+    @callback
+    def websocket_upsert_house_room(hass: HomeAssistant, connection, msg) -> None:
+        if _send_admin_required(connection, msg):
+            return
+
+        async def _save() -> None:
+            room = await get_store(hass).async_upsert_house_room(msg["room"])
+            connection.send_result(msg["id"], room)
+            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "upsert_house_room", "room": room})
+
+        hass.async_create_task(_save())
+
+    @websocket_api.websocket_command(
+        {
+            vol.Required("type"): "chore_quest/delete_house_room",
+            vol.Required("room_id"): cv.string,
+        }
+    )
+    @callback
+    def websocket_delete_house_room(hass: HomeAssistant, connection, msg) -> None:
+        if _send_admin_required(connection, msg):
+            return
+
+        async def _delete() -> None:
+            await get_store(hass).async_delete_house_room(msg["room_id"])
+            connection.send_result(msg["id"], {"ok": True})
+            hass.bus.async_fire(f"{DOMAIN}_updated", {"action": "delete_house_room", "room_id": msg["room_id"]})
+
+        hass.async_create_task(_delete())
+
+    @websocket_api.websocket_command(
+        {
             vol.Required("type"): "chore_quest/upsert_anyone_quest",
             vol.Required("quest"): dict,
         }
@@ -1032,6 +1097,8 @@ def _register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_add_child)
     websocket_api.async_register_command(hass, websocket_delete_child)
     websocket_api.async_register_command(hass, websocket_delete_chore)
+    websocket_api.async_register_command(hass, websocket_upsert_house_room)
+    websocket_api.async_register_command(hass, websocket_delete_house_room)
     websocket_api.async_register_command(hass, websocket_upsert_anyone_quest)
     websocket_api.async_register_command(hass, websocket_delete_anyone_quest)
     websocket_api.async_register_command(hass, websocket_delete_history_event)

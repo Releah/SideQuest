@@ -26,6 +26,9 @@ class SideQuestStore:
         stored = await self._store.async_load()
         if stored:
             self.data = self._merge_defaults(stored)
+        self._normalise_house_rooms()
+        for quest in self.data.get("anyone_quests", []):
+            quest.setdefault("room_id", "house")
         for mission in self.data.get("global_missions", []):
             mission["tasks"] = self._normalise_global_tasks(mission)
         for template in self.data.get("global_mission_templates", []):
@@ -44,6 +47,7 @@ class SideQuestStore:
         for key in (
             "children",
             "chores",
+            "house_rooms",
             "anyone_quests",
             "global_missions",
             "global_mission_templates",
@@ -56,6 +60,26 @@ class SideQuestStore:
         for key in ("claims", "anyone_claims", "weekly_totals", "last_week_totals", "xp_totals", "xp_lifetime_totals"):
             merged[key] = {**merged.get(key, {}), **stored.get(key, {})}
         return merged
+
+    def _normalise_house_rooms(self) -> None:
+        """Ensure there is always a fallback house room."""
+        rooms = self.data.setdefault("house_rooms", [])
+        if not rooms:
+            rooms.append({"id": "house", "name": "House", "icon": "mdi:home"})
+        if not any(room.get("id") == "house" for room in rooms):
+            rooms.insert(0, {"id": "house", "name": "House", "icon": "mdi:home"})
+        for room in rooms:
+            room.setdefault("id", self._slug(room.get("name", "room")))
+            room.setdefault("name", "Room")
+            room.setdefault("icon", "mdi:home")
+
+    def get_house_room(self, room_id: str | None) -> dict:
+        """Return a house room by id, falling back to House."""
+        self._normalise_house_rooms()
+        for room in self.data.get("house_rooms", []):
+            if room.get("id") == room_id:
+                return room
+        return next(room for room in self.data.get("house_rooms", []) if room.get("id") == "house")
 
     def is_kitchen_user(self, user_id: str | None) -> bool:
         """Return whether a Home Assistant user is linked to the kitchen view."""
@@ -376,10 +400,42 @@ class SideQuestStore:
         self.data["claims"].pop(chore_id, None)
         await self.async_save()
 
+    async def async_upsert_house_room(self, room: dict) -> dict:
+        """Create or update a room used to group house quests."""
+        room = dict(room)
+        room["name"] = str(room.get("name", "")).strip()
+        if not room["name"]:
+            raise ValueError("Room name is required.")
+        room.setdefault("id", self._slug(f"room_{room['name']}"))
+        room.setdefault("icon", "mdi:home")
+        room["icon"] = str(room.get("icon", "")).strip() or "mdi:home"
+        existing = next((item for item in self.data.get("house_rooms", []) if item["id"] == room["id"]), None)
+        if existing:
+            existing.update(room)
+            result = existing
+        else:
+            self.data.setdefault("house_rooms", []).append(room)
+            result = room
+        self._normalise_house_rooms()
+        await self.async_save()
+        return result
+
+    async def async_delete_house_room(self, room_id: str) -> None:
+        """Delete a room and move its quests back to the default House room."""
+        if room_id == "house":
+            raise ValueError("The default House room cannot be deleted.")
+        self.data["house_rooms"] = [room for room in self.data.get("house_rooms", []) if room["id"] != room_id]
+        for quest in self.data.get("anyone_quests", []):
+            if quest.get("room_id") == room_id:
+                quest["room_id"] = "house"
+        self._normalise_house_rooms()
+        await self.async_save()
+
     async def async_upsert_anyone_quest(self, quest: dict) -> dict:
         """Create or update a quest that can be claimed by any child."""
         quest = dict(quest)
         quest.setdefault("id", self._slug(f"anyone_{quest['name']}"))
+        quest.setdefault("room_id", "house")
         quest.setdefault("enabled", True)
         quest.setdefault("approval_required", True)
         quest.setdefault("schedule", {"type": "daily"})
@@ -393,6 +449,7 @@ class SideQuestStore:
         quest["reward"] = float(quest.get("reward", 0))
         quest["xp"] = int(float(quest.get("xp", 0)))
         quest["badges"] = self._normalise_badges(quest.get("badges", []))
+        quest["room_id"] = self.get_house_room(quest.get("room_id")).get("id", "house")
         quest["quantity_enabled"] = bool(quest.get("quantity_enabled", False))
         quest["quantity_label"] = str(quest.get("quantity_label", "")).strip() or "How many?"
 

@@ -164,6 +164,9 @@ upsert_anyone_quest:
     id:
       selector:
         text:
+    room_id:
+      selector:
+        text:
     name:
       required: true
       selector:
@@ -216,6 +219,26 @@ upsert_anyone_quest:
 delete_anyone_quest:
   fields:
     quest_id:
+      required: true
+      selector:
+        text:
+
+upsert_house_room:
+  fields:
+    id:
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    icon:
+      selector:
+        icon:
+
+delete_house_room:
+  fields:
+    room_id:
       required: true
       selector:
         text:

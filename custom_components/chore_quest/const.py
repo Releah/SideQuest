@@ -9,6 +9,9 @@ CONF_NOTIFY_TARGETS = "notify_targets"
 DEFAULT_DATA = {
     "children": [],
     "chores": [],
+    "house_rooms": [
+        {"id": "house", "name": "House", "icon": "mdi:home"},
+    ],
     "anyone_quests": [],
     "global_missions": [],
     "global_mission_templates": [],

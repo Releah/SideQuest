@@ -776,6 +776,22 @@ class SideQuestPanel extends HTMLElement {
           grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
           gap: 16px;
         }
+        .quest-room-group {
+          display: grid;
+          gap: 12px;
+          margin-top: 14px;
+        }
+        .quest-room-group h3 {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 0;
+          color: #f7fbff;
+        }
+        .quest-room-group h3 ha-icon {
+          --mdc-icon-size: 22px;
+          color: #00d8ff;
+        }
         .quest-card {
           min-height: 190px;
           display: grid;
@@ -975,7 +991,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260627-xp-balance-split</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-house-quest-rooms</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1063,6 +1079,7 @@ class SideQuestPanel extends HTMLElement {
     this.data.children = this.data.children || [];
     this.data.chores = this.data.chores || [];
     this.data.claims = this.data.claims || {};
+    this.data.house_rooms = this.data.house_rooms || [{ id: "house", name: "House", icon: "mdi:home" }];
     this.data.anyone_quests = this.data.anyone_quests || [];
     this.data.anyone_claims = this.data.anyone_claims || {};
     this.data.anyone_quests_due = this.data.anyone_quests_due || [];
@@ -1074,6 +1091,8 @@ class SideQuestPanel extends HTMLElement {
     this.data.weekly_totals = this.data.weekly_totals || {};
     this.data.xp_totals = this.data.xp_totals || {};
     this.data.xp_lifetime_totals = this.data.xp_lifetime_totals || {};
+    this.data.anyone_quests.forEach((quest) => { quest.room_id = quest.room_id || "house"; });
+    this.data.anyone_quests_due.forEach((quest) => { quest.room_id = quest.room_id || "house"; });
   }
 
   async refreshUsers() {
@@ -1142,6 +1161,46 @@ class SideQuestPanel extends HTMLElement {
     return claim ? claim.status : "open";
   }
 
+  houseRooms() {
+    const rooms = this.data.house_rooms && this.data.house_rooms.length
+      ? this.data.house_rooms
+      : [{ id: "house", name: "House", icon: "mdi:home" }];
+    return rooms.map((room) => ({
+      id: room.id || "house",
+      name: room.name || "House",
+      icon: room.icon || "mdi:home",
+    }));
+  }
+
+  houseRoom(roomId) {
+    return this.houseRooms().find((room) => room.id === roomId) || this.houseRooms()[0];
+  }
+
+  groupedHouseQuests(quests) {
+    const list = quests || [];
+    return this.houseRooms()
+      .map((room) => ({
+        room,
+        quests: list.filter((quest) => (quest.room_id || "house") === room.id),
+      }))
+      .filter((group) => group.quests.length);
+  }
+
+  houseQuestGroupsHtml(quests, selectedChild) {
+    const groups = this.groupedHouseQuests(quests);
+    if (!groups.length) {
+      return `<div class="card empty-state"><p class="muted">No house quests are open right now.</p></div>`;
+    }
+    return groups.map((group) => `
+      <section class="quest-room-group">
+        <h3><ha-icon icon="${this.escapeHtml(group.room.icon)}"></ha-icon>${this.escapeHtml(group.room.name)}</h3>
+        <div class="quest-grid">
+          ${group.quests.map((quest) => this.anyoneQuestCard(quest, selectedChild)).join("")}
+        </div>
+      </section>
+    `).join("");
+  }
+
   async renderKid() {
     await this.refresh();
     const content = this.querySelector("#content");
@@ -1204,10 +1263,8 @@ class SideQuestPanel extends HTMLElement {
         <div class="quest-grid">
           ${chores.length ? chores.map((chore) => this.kidChoreCard(chore)).join("") : `<div class="card empty-state"><p class="muted">Mission control is clear right now.</p></div>`}
         </div>
-        <h2 class="section-title">Anyone quests</h2>
-        <div class="quest-grid">
-          ${anyoneQuests.length ? anyoneQuests.map((quest) => this.anyoneQuestCard(quest, child)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
-        </div>
+        <h2 class="section-title">House quests</h2>
+        ${this.houseQuestGroupsHtml(anyoneQuests, child)}
       </div>
     `;
 
@@ -1284,10 +1341,8 @@ class SideQuestPanel extends HTMLElement {
             <p class="muted">${pendingTasks} waiting for approval</p>
           </div>
         </div>
-        <h2 class="section-title">Anyone quests</h2>
-        <div class="quest-grid">
-          ${(this.me.anyone_quests || this.data.anyone_quests_due || []).length ? (this.me.anyone_quests || this.data.anyone_quests_due || []).map((quest) => this.anyoneQuestCard(quest, child)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
-        </div>
+        <h2 class="section-title">House quests</h2>
+        ${this.houseQuestGroupsHtml(this.me.anyone_quests || this.data.anyone_quests_due || [], child)}
         <h2 class="section-title">Global missions</h2>
         <div class="quest-grid">
           ${activeMissions.length ? activeMissions.map((mission) => this.globalMissionCard(mission, child)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
@@ -1359,10 +1414,8 @@ class SideQuestPanel extends HTMLElement {
             ${chores.length ? chores.map((chore) => this.kidChoreCard(chore)).join("") : `<p class="muted">No available quests right now.</p>`}
           </div>
         </div>
-        <h2 class="section-title">Anyone quests</h2>
-        <div class="quest-grid">
-          ${(this.data.anyone_quests_due || []).length ? (this.data.anyone_quests_due || []).map((quest) => this.anyoneQuestCard(quest, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No shared quests are open right now.</p></div>`}
-        </div>
+        <h2 class="section-title">House quests</h2>
+        ${this.houseQuestGroupsHtml(this.data.anyone_quests_due || [], selectedChild)}
         <h2 class="section-title">Global missions</h2>
         <div class="quest-grid">
           ${this.activeGlobalMissions().length ? this.activeGlobalMissions().map((mission) => this.globalMissionCard(mission, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
@@ -1778,6 +1831,7 @@ class SideQuestPanel extends HTMLElement {
     const pending = this.anyoneClaimState(quest.id) === "pending";
     const blocksOnPending = quest.repeat_mode !== "unlimited";
     const description = quest.description || "This is open to anyone in the house.";
+    const room = this.houseRoom(quest.room_id || "house");
     return `
       <div class="card quest-card">
         <div class="quest-top">
@@ -1786,7 +1840,7 @@ class SideQuestPanel extends HTMLElement {
         </div>
         <div class="quest-copy">
           <h3>${this.escapeHtml(quest.name)}</h3>
-          <span class="pill">Anyone - ${this.escapeHtml(this.scheduleLabel(quest.schedule))} - GBP ${Number(quest.reward).toFixed(2)}</span>
+          <span class="pill">${this.escapeHtml(room.name)} - ${this.escapeHtml(this.scheduleLabel(quest.schedule))} - GBP ${Number(quest.reward).toFixed(2)}</span>
           <div class="badge-list">${this.badgePills(quest.badges || ["team"])}</div>
           <span class="pill">${Number(quest.xp || 0)} XP</span>
           <p class="muted" data-info-panel="${this.escapeHtml(`anyone_${quest.id}`)}" style="display:none">${this.escapeHtml(description)}</p>
@@ -1948,7 +2002,7 @@ class SideQuestPanel extends HTMLElement {
           ${this.adminNavButton("home", "Home", "mdi:home", activeAdminSection)}
           ${this.adminNavButton("players", "Player management", "mdi:account-group", activeAdminSection)}
           ${this.adminNavButton("chores", "Personal quests", "mdi:calendar-check", activeAdminSection)}
-          ${this.adminNavButton("anyone", "Anyone quests", "mdi:account-multiple-check", activeAdminSection)}
+          ${this.adminNavButton("anyone", "House quests", "mdi:home-group", activeAdminSection)}
           ${this.adminNavButton("global", "Global missions", "mdi:rocket-launch", activeAdminSection)}
           ${this.adminNavButton("store", "Store", "mdi:storefront", activeAdminSection)}
           ${this.adminNavButton("money", "Pocket money", "mdi:cash-sync", activeAdminSection)}
@@ -2022,8 +2076,13 @@ class SideQuestPanel extends HTMLElement {
 
           <section class="admin-section ${activeAdminSection === "anyone" ? "active" : ""}" data-admin-panel="anyone">
             <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:account-multiple-check"></ha-icon>Anyone quests</h2>
-              <p class="muted">Use these for repeatable tasks that any player can claim. The reward and XP go to whoever claims and gets approved.</p>
+              <h2><ha-icon icon="mdi:home-group"></ha-icon>House quests</h2>
+              <p class="muted">Create room groups first, then add repeatable quests that any player can claim in that room.</p>
+              ${this.houseRoomManager()}
+            </div>
+            <div class="card admin-panel">
+              <h2><ha-icon icon="mdi:floor-plan"></ha-icon>Room quests</h2>
+              ${this.houseRoomTabs()}
               <div class="chore-groups">
                 ${this.anyoneQuestEditorGroups()}
               </div>
@@ -2191,6 +2250,14 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
+    content.querySelectorAll("[data-house-room-tab]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        this.selectedHouseRoomId = button.dataset.houseRoomTab;
+        this.expandedAnyoneQuestId = "";
+        await this.renderAdmin();
+      });
+    });
+
     content.querySelectorAll("[data-toggle-store-editor]").forEach((button) => {
       button.addEventListener("click", async () => {
         const id = button.dataset.toggleStoreEditor;
@@ -2225,6 +2292,30 @@ class SideQuestPanel extends HTMLElement {
           dashboard_users: dashboardUsers,
         });
         await this.renderAdmin();
+      });
+    });
+
+    content.querySelector("#house-room-form")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await this.runAction("Room saved.", async () => {
+        const form = new FormData(event.currentTarget);
+        await this._hass.callService("chore_quest", "upsert_house_room", {
+          name: form.get("name"),
+          icon: form.get("icon"),
+        });
+        await this.renderAdmin();
+      });
+    });
+
+    content.querySelectorAll("[data-delete-house-room]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await this.runAction("Room deleted. Its quests moved back to House.", async () => {
+          await this._hass.callService("chore_quest", "delete_house_room", {
+            room_id: button.dataset.deleteHouseRoom,
+          });
+          this.selectedHouseRoomId = "house";
+          await this.renderAdmin();
+        });
       });
     });
 
@@ -2304,10 +2395,10 @@ class SideQuestPanel extends HTMLElement {
         const row = button.closest(".chore-editor");
         const quest = this.readAnyoneQuestRow(row);
         if (!quest.name) {
-          this.setNotice("Anyone quest rows need at least a name.", true);
+          this.setNotice("House quest rows need at least a name.", true);
           return;
         }
-        await this.runAction("Anyone quest saved.", async () => {
+        await this.runAction("House quest saved.", async () => {
           await this._hass.callService("chore_quest", "upsert_anyone_quest", quest);
           await this.renderAdmin();
         });
@@ -2452,7 +2543,7 @@ class SideQuestPanel extends HTMLElement {
 
     content.querySelectorAll("[data-delete-anyone-row]").forEach((button) => {
       button.addEventListener("click", async () => {
-        await this.runAction("Anyone quest deleted.", async () => {
+        await this.runAction("House quest deleted.", async () => {
           await this._hass.callService("chore_quest", "delete_anyone_quest", {
             quest_id: button.dataset.deleteAnyoneRow,
           });
@@ -3049,29 +3140,71 @@ class SideQuestPanel extends HTMLElement {
     };
   }
 
-  anyoneQuestEditorGroups() {
-    const quests = this.data.anyone_quests || [];
+  selectedHouseRoom() {
+    const rooms = this.houseRooms();
+    return rooms.find((room) => room.id === this.selectedHouseRoomId) || rooms[0];
+  }
+
+  houseRoomManager() {
+    const rooms = this.houseRooms();
     return `
-      <div class="chore-group">
-        ${quests.length ? quests.map((quest) => this.anyoneQuestEditorRow(quest, false)).join("") : `<p class="muted">No anyone quests yet.</p>`}
-        ${this.anyoneQuestEditorRow({}, true)}
+      <form id="house-room-form" class="chore-editor-line">
+        <label>Room name<input name="name" required placeholder="Kitchen"></label>
+        <label>Room icon${this.iconPickerInput('name="icon"', "mdi:home", "mdi:sofa")}</label>
+        <button type="submit">Add room</button>
+      </form>
+      <div class="rows">
+        ${rooms.map((room) => `
+          <div class="row">
+            <div>
+              <strong><ha-icon icon="${this.escapeHtml(room.icon)}"></ha-icon>${this.escapeHtml(room.name)}</strong>
+              <div class="muted">${(this.data.anyone_quests || []).filter((quest) => (quest.room_id || "house") === room.id).length} house quests</div>
+            </div>
+            ${room.id === "house" ? `<span class="pill">Default</span>` : `<button class="danger" data-delete-house-room="${this.escapeHtml(room.id)}">Delete room</button>`}
+          </div>
+        `).join("")}
       </div>
     `;
   }
 
-  anyoneQuestEditorRow(quest, isNew) {
+  houseRoomTabs() {
+    const selected = this.selectedHouseRoom();
+    return `
+      <div class="player-filter">
+        ${this.houseRooms().map((room) => `
+          <button class="secondary ${selected && selected.id === room.id ? "active" : ""}" data-house-room-tab="${this.escapeHtml(room.id)}">
+            <ha-icon icon="${this.escapeHtml(room.icon)}"></ha-icon>
+            ${this.escapeHtml(room.name)}
+          </button>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  anyoneQuestEditorGroups() {
+    const room = this.selectedHouseRoom();
+    const quests = (this.data.anyone_quests || []).filter((quest) => (quest.room_id || "house") === room.id);
+    return `
+      <div class="chore-group">
+        ${quests.length ? quests.map((quest) => this.anyoneQuestEditorRow(quest, false, room.id)).join("") : `<p class="muted">No house quests in ${this.escapeHtml(room.name)} yet.</p>`}
+        ${this.anyoneQuestEditorRow({}, true, room.id)}
+      </div>
+    `;
+  }
+
+  anyoneQuestEditorRow(quest, isNew, roomId) {
     const editorId = quest.id || "new_anyone_quest";
     const open = isNew || this.expandedAnyoneQuestId === editorId;
-    const title = quest.name || "Add new anyone quest";
+    const title = quest.name || "Add new house quest";
     return `
-      <div class="chore-editor ${open ? "open" : ""}" data-anyone-row="${this.escapeHtml(quest.id || "")}">
+      <div class="chore-editor ${open ? "open" : ""}" data-anyone-row="${this.escapeHtml(quest.id || "")}" data-room-id="${this.escapeHtml(quest.room_id || roomId || "house")}">
         <button type="button" class="secondary chore-editor-header" data-toggle-anyone-editor="${this.escapeHtml(editorId)}">
           <strong><ha-icon icon="${this.escapeHtml(quest.icon || "mdi:account-group")}"></ha-icon>${this.escapeHtml(title)}</strong>
           <span>${isNew ? "New" : open ? "Hide details" : "Edit"}</span>
         </button>
         <div class="chore-editor-body">
           <div class="chore-editor-line">
-            <label>Quest name<input data-anyone-field="name" value="${this.escapeHtml(quest.name || "")}" placeholder="Empty dishwasher"></label>
+            <label>Quest name<input data-anyone-field="name" value="${this.escapeHtml(quest.name || "")}" placeholder="Sweep floor"></label>
             <label>Quest icon${this.iconPickerInput('data-anyone-field="icon"', quest.icon || "mdi:account-group", "mdi:broom")}</label>
             <label>Quest description<input data-anyone-field="description" value="${this.escapeHtml(quest.description || "")}" placeholder="What should this include?"></label>
           </div>
@@ -3116,7 +3249,7 @@ class SideQuestPanel extends HTMLElement {
             </label>
             <label>Quantity prompt<input data-anyone-field="quantity_label" value="${this.escapeHtml(quest.quantity_label || "How many?")}"></label>
             <div class="chore-editor-actions">
-              <button type="button" data-save-anyone-row>${isNew ? "Add anyone quest" : "Save"}</button>
+              <button type="button" data-save-anyone-row>${isNew ? "Add house quest" : "Save"}</button>
               ${isNew ? "" : `<button type="button" class="danger" data-delete-anyone-row="${this.escapeHtml(quest.id)}">Delete</button>`}
             </div>
           </div>
@@ -3130,6 +3263,7 @@ class SideQuestPanel extends HTMLElement {
     const id = row.dataset.anyoneRow || undefined;
     return {
       id,
+      room_id: row.dataset.roomId || "house",
       name: field("name")?.value.trim() || "",
       icon: field("icon")?.value.trim() || "mdi:account-group",
       reward: Number(field("reward")?.value || 0),
@@ -3512,6 +3646,7 @@ class SideQuestPanel extends HTMLElement {
   anyonePendingRow(claim) {
     const quest = this.data.anyone_quests.find((item) => item.id === claim.quest_id);
     if (!quest) return "";
+    const room = this.houseRoom(quest.room_id || "house");
     const reward = Number(quest.reward || 0);
     const quantity = Number(claim.quantity || 1);
     const fullReward = reward * quantity;
@@ -3520,7 +3655,7 @@ class SideQuestPanel extends HTMLElement {
       <div class="row">
         <div>
           <strong>${this.escapeHtml(this.childName(claim.child_id))} - ${this.escapeHtml(quest.name)}</strong>
-          <div class="muted">Anyone quest - claimed ${new Date(claim.claimed_at).toLocaleString()}${quantityText} - Full reward GBP ${fullReward.toFixed(2)}</div>
+          <div class="muted">${this.escapeHtml(room.name)} house quest - claimed ${new Date(claim.claimed_at).toLocaleString()}${quantityText} - Full reward GBP ${fullReward.toFixed(2)}</div>
         </div>
         <div class="rating-actions" aria-label="Approve shared quest rating">
           ${[1, 2, 3, 4, 5].map((rating) => `
