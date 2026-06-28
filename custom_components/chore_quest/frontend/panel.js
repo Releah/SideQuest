@@ -10,10 +10,16 @@ class SideQuestPanel extends HTMLElement {
   async load() {
     this.innerHTML = `
       <style>
+        html,
+        body {
+          height: 100%;
+          overflow: hidden;
+        }
         :host,
         chore-quest-panel {
           display: block;
-          height: 100vh;
+          height: 100dvh;
+          max-height: 100dvh;
           min-height: 0;
           padding: 24px;
           box-sizing: border-box;
@@ -1036,7 +1042,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-panel-height</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-panel-scroll-lock</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
