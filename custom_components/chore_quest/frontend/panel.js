@@ -13,9 +13,10 @@ class SideQuestPanel extends HTMLElement {
         :host,
         chore-quest-panel {
           display: block;
-          min-height: 100vh;
+          min-height: 100%;
           padding: 24px;
           box-sizing: border-box;
+          overflow: visible;
           color: #f7fbff;
           background:
             radial-gradient(circle at 18% 14%, rgba(0, 216, 255, 0.18) 0 1px, transparent 2px),
@@ -569,10 +570,14 @@ class SideQuestPanel extends HTMLElement {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
           gap: 8px;
+          z-index: 1;
+        }
+        .icon-picker:focus-within {
+          z-index: 120;
         }
         .icon-picker-menu {
           position: absolute;
-          z-index: 20;
+          z-index: 130;
           top: calc(100% + 8px);
           left: 0;
           right: 0;
@@ -644,6 +649,11 @@ class SideQuestPanel extends HTMLElement {
         }
         .admin-panel {
           margin-top: 18px;
+          position: relative;
+          z-index: 0;
+        }
+        .admin-panel:focus-within {
+          z-index: 80;
         }
         .admin-shell {
           display: grid;
@@ -991,7 +1001,7 @@ class SideQuestPanel extends HTMLElement {
     if (!this.isAdmin()) {
       this.querySelector("#admin-tab").style.display = "none";
     } else {
-      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-house-quest-rooms</div>`;
+      this.querySelector("#footer").innerHTML = `<div class="footer">SideQuest panel v20260628-no-global-missions</div>`;
     }
 
     this.querySelector("#home-tab").addEventListener("click", () => {
@@ -1019,7 +1029,7 @@ class SideQuestPanel extends HTMLElement {
 
     await this.refresh();
     if (this.me.child && !this.me.is_kitchen) {
-      this.querySelector("#dashboard-tab").textContent = "House Missions";
+      this.querySelector("#dashboard-tab").textContent = "House Quests";
     }
     if (!this.isAdmin() && !this.me.is_kitchen && !this.me.child) {
       this.querySelector("#dashboard-tab").style.display = "none";
@@ -1274,7 +1284,7 @@ class SideQuestPanel extends HTMLElement {
           const chore = this.data.chores.find((item) => item.id === button.dataset.claim) || {};
           await this._hass.callService("chore_quest", "claim_chore", {
             chore_id: button.dataset.claim,
-            quantity: this.claimQuantity(chore),
+            quantity: 1,
           });
           await this.renderKid();
         });
@@ -1287,7 +1297,7 @@ class SideQuestPanel extends HTMLElement {
           await this._hass.callService("chore_quest", "claim_anyone_quest", {
             quest_id: button.dataset.claimAnyone,
             child_id: child.id,
-            quantity: this.claimQuantity(quest),
+            quantity: 1,
           });
           await this.renderKid();
         });
@@ -1305,23 +1315,13 @@ class SideQuestPanel extends HTMLElement {
       return;
     }
 
-    const activeMissions = this.activeGlobalMissions();
-    const openTasks = activeMissions.reduce(
-      (count, mission) => count + (mission.tasks || []).filter((task) => (task.status || "open") === "open").length,
-      0,
-    );
-    const pendingTasks = activeMissions.reduce(
-      (count, mission) => count + (mission.tasks || []).filter((task) => (task.status || "open") === "pending").length,
-      0,
-    );
-
     content.innerHTML = `
       <div class="quest-theme quest-board">
         <div class="quest-giver">
-          <div class="quest-giver-badge"><ha-icon icon="mdi:space-station"></ha-icon></div>
+          <div class="quest-giver-badge"><ha-icon icon="mdi:home-group"></ha-icon></div>
           <div>
-            <h2>House mission dashboard</h2>
-            <p class="muted">Choose a house mission, claim a task, and help unlock the next thing.</p>
+            <h2>House dashboard</h2>
+            <p class="muted">Choose a player, pick a house quest, and keep the scoreboard moving.</p>
           </div>
         </div>
         <div class="hero">
@@ -1329,24 +1329,20 @@ class SideQuestPanel extends HTMLElement {
             <div class="avatar-row">
               ${this.avatarHtml(child)}
               <div>
-                <span class="pill">Mission control</span>
-                <h2>${this.escapeHtml(child.name)}'s global missions</h2>
+                <span class="pill">House quests</span>
+                <h2>${this.escapeHtml(child.name)}'s shared quests</h2>
               </div>
             </div>
-            <p class="muted">Global missions are bigger house objectives made from smaller tasks.</p>
+            <p class="muted">Shared house quests are grouped by room and can be claimed by any player.</p>
           </div>
           <div class="card hero-side">
             <span class="pill">House tasks</span>
-            <h2>${openTasks} open</h2>
-            <p class="muted">${pendingTasks} waiting for approval</p>
+            <h2>${(this.me.anyone_quests || this.data.anyone_quests_due || []).length} open</h2>
+            <p class="muted">${Object.keys(this.data.anyone_claims || {}).length} waiting for approval</p>
           </div>
         </div>
         <h2 class="section-title">House quests</h2>
         ${this.houseQuestGroupsHtml(this.me.anyone_quests || this.data.anyone_quests_due || [], child)}
-        <h2 class="section-title">Global missions</h2>
-        <div class="quest-grid">
-          ${activeMissions.length ? activeMissions.map((mission) => this.globalMissionCard(mission, child)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
-        </div>
       </div>
     `;
 
@@ -1357,19 +1353,7 @@ class SideQuestPanel extends HTMLElement {
           await this._hass.callService("chore_quest", "claim_anyone_quest", {
             quest_id: button.dataset.claimAnyone,
             child_id: child.id,
-            quantity: this.claimQuantity(quest),
-          });
-          await this.renderKidDashboard();
-        });
-      });
-    });
-    content.querySelectorAll("[data-claim-global-task]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        await this.runAction("Mission task claimed.", async () => {
-          await this._hass.callService("chore_quest", "claim_global_task", {
-            mission_id: button.dataset.missionId,
-            task_id: button.dataset.taskId,
-            child_id: child.id,
+            quantity: 1,
           });
           await this.renderKidDashboard();
         });
@@ -1416,10 +1400,6 @@ class SideQuestPanel extends HTMLElement {
         </div>
         <h2 class="section-title">House quests</h2>
         ${this.houseQuestGroupsHtml(this.data.anyone_quests_due || [], selectedChild)}
-        <h2 class="section-title">Global missions</h2>
-        <div class="quest-grid">
-          ${this.activeGlobalMissions().length ? this.activeGlobalMissions().map((mission) => this.globalMissionCard(mission, selectedChild)).join("") : `<div class="card empty-state"><p class="muted">No global missions posted right now.</p></div>`}
-        </div>
       </div>
     `;
 
@@ -1439,7 +1419,7 @@ class SideQuestPanel extends HTMLElement {
           const chore = this.data.chores.find((item) => item.id === button.dataset.claim) || {};
           await this._hass.callService("chore_quest", "claim_chore", {
             chore_id: button.dataset.claim,
-            quantity: this.claimQuantity(chore),
+            quantity: 1,
           });
           await this.renderKitchen(selectedChild.id);
         });
@@ -1456,23 +1436,7 @@ class SideQuestPanel extends HTMLElement {
           await this._hass.callService("chore_quest", "claim_anyone_quest", {
             quest_id: button.dataset.claimAnyone,
             child_id: selectedChild.id,
-            quantity: this.claimQuantity(quest),
-          });
-          await this.renderKitchen(selectedChild.id);
-        });
-      });
-    });
-    content.querySelectorAll("[data-claim-global-task]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        if (!selectedChild) {
-          this.setNotice("Add a player before claiming global missions.", true);
-          return;
-        }
-        await this.runAction("Mission task claimed.", async () => {
-          await this._hass.callService("chore_quest", "claim_global_task", {
-            mission_id: button.dataset.missionId,
-            task_id: button.dataset.taskId,
-            child_id: selectedChild.id,
+            quantity: 1,
           });
           await this.renderKitchen(selectedChild.id);
         });
@@ -1744,7 +1708,7 @@ class SideQuestPanel extends HTMLElement {
     const year = now.getFullYear();
 
     const approved = (this.data.history || []).filter((event) =>
-      ["approved", "anyone_approved", "global_task_approved", "global_task_completed"].includes(event.type)
+      ["approved", "anyone_approved"].includes(event.type)
     );
     const approvedThisYear = approved.filter((event) => {
       const created = new Date(event.created_at);
@@ -1767,11 +1731,7 @@ class SideQuestPanel extends HTMLElement {
       completedWeek: approvedThisWeek.length,
       completedYear: approvedThisYear.length,
       pendingCount: Object.keys(this.data.claims || {}).length
-        + Object.keys(this.data.anyone_claims || {}).length
-        + this.activeGlobalMissions().reduce(
-          (count, mission) => count + (mission.tasks || []).filter((task) => task.status === "pending").length,
-          0,
-        ),
+        + Object.keys(this.data.anyone_claims || {}).length,
       topChildName: top.child ? top.child.name : "No leader yet",
       topChildTotal: top.total,
     };
@@ -1785,22 +1745,6 @@ class SideQuestPanel extends HTMLElement {
         <span>${this.escapeHtml(hint)}</span>
       </div>
     `;
-  }
-
-  claimQuantity(chore) {
-    if (!chore.quantity_enabled) {
-      return 1;
-    }
-    const label = chore.quantity_label || "How many?";
-    const value = window.prompt(label, "1");
-    if (value === null) {
-      throw new Error("Quest cancelled.");
-    }
-    const quantity = Math.max(1, Math.min(100, Math.floor(Number(value || 1))));
-    if (!Number.isFinite(quantity)) {
-      throw new Error("Please enter a number.");
-    }
-    return quantity;
   }
 
   kidChoreCard(chore) {
@@ -1994,7 +1938,7 @@ class SideQuestPanel extends HTMLElement {
     const content = this.querySelector("#content");
     const pending = Object.values(this.data.claims || {});
     const anyonePending = Object.values(this.data.anyone_claims || {});
-    const activeAdminSection = this.adminSection || "home";
+    const activeAdminSection = this.adminSection === "global" ? "home" : (this.adminSection || "home");
 
     content.innerHTML = `
       <div class="admin-shell">
@@ -2003,7 +1947,6 @@ class SideQuestPanel extends HTMLElement {
           ${this.adminNavButton("players", "Player management", "mdi:account-group", activeAdminSection)}
           ${this.adminNavButton("chores", "Personal quests", "mdi:calendar-check", activeAdminSection)}
           ${this.adminNavButton("anyone", "House quests", "mdi:home-group", activeAdminSection)}
-          ${this.adminNavButton("global", "Global missions", "mdi:rocket-launch", activeAdminSection)}
           ${this.adminNavButton("store", "Store", "mdi:storefront", activeAdminSection)}
           ${this.adminNavButton("money", "Pocket money", "mdi:cash-sync", activeAdminSection)}
           ${this.adminNavButton("ranks", "Ranks", "mdi:shield-star", activeAdminSection)}
@@ -2017,10 +1960,9 @@ class SideQuestPanel extends HTMLElement {
             </div>
             <div class="card admin-panel">
               <h2><ha-icon icon="mdi:check-decagram"></ha-icon>Pending approvals</h2>
-              ${pending.length || anyonePending.length || this.globalPendingTaskRows() ? "" : `<p class="muted">No quests waiting for approval.</p>`}
+              ${pending.length || anyonePending.length ? "" : `<p class="muted">No quests waiting for approval.</p>`}
               ${pending.map((claim) => this.pendingRow(claim)).join("")}
               ${anyonePending.map((claim) => this.anyonePendingRow(claim)).join("")}
-              ${this.globalPendingTaskRows()}
             </div>
           </section>
 
@@ -2086,47 +2028,6 @@ class SideQuestPanel extends HTMLElement {
               <div class="chore-groups">
                 ${this.anyoneQuestEditorGroups()}
               </div>
-            </div>
-          </section>
-
-          <section class="admin-section ${activeAdminSection === "global" ? "active" : ""}" data-admin-panel="global">
-            <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:rocket-launch"></ha-icon>Global missions</h2>
-              <p class="muted">Global missions are grouped objectives with task rows. They can be saved as templates and launched again later.</p>
-              <form id="global-mission-form">
-                <label>Mission objective<input name="name" required placeholder="Before screen time"></label>
-                <input name="id" type="hidden">
-                <label>Icon${this.iconPickerInput('name="icon"', "mdi:rocket-launch", "mdi:broom")}</label>
-                <label>Badges<input name="badges" placeholder="team, mandatory" value="team"></label>
-                <label>Description<input name="description" placeholder="What needs doing before the fun thing?"></label>
-                <div class="task-table">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Task<span>What needs doing</span></th>
-                        <th>Description<span>Optional helpful detail</span></th>
-                        <th>XP<span>Rank points</span></th>
-                        <th>Money<span>Optional GBP reward</span></th>
-                        <th>Approval<span>Needs parent check?</span></th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody id="global-task-rows">
-                      ${this.globalTaskEditorRows([])}
-                    </tbody>
-                  </table>
-                </div>
-                <button type="button" class="secondary" id="add-global-task-row">Add task row</button>
-                <button type="submit">Post mission</button>
-                <button type="button" class="secondary" id="clear-global-mission-form">Clear</button>
-              </form>
-              <div style="margin-top:12px">
-                ${this.globalMissionRows()}
-              </div>
-            </div>
-            <div class="card admin-panel">
-              <h2><ha-icon icon="mdi:content-save"></ha-icon>Saved mission templates</h2>
-              ${this.globalTemplateRows()}
             </div>
           </section>
 
@@ -2319,7 +2220,7 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
-    content.querySelector("#global-mission-form").addEventListener("submit", async (event) => {
+    content.querySelector("#global-mission-form")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       await this.runAction("House mission posted.", async () => {
         const form = new FormData(event.currentTarget);
@@ -2490,11 +2391,11 @@ class SideQuestPanel extends HTMLElement {
       });
     });
 
-    content.querySelector("#clear-global-mission-form").addEventListener("click", () => {
+    content.querySelector("#clear-global-mission-form")?.addEventListener("click", () => {
       this.clearGlobalMissionForm(content.querySelector("#global-mission-form"));
     });
 
-    content.querySelector("#add-global-task-row").addEventListener("click", () => {
+    content.querySelector("#add-global-task-row")?.addEventListener("click", () => {
       this.addGlobalTaskRow(content);
     });
 
@@ -3094,12 +2995,6 @@ class SideQuestPanel extends HTMLElement {
                 <option value="unlimited" ${chore.repeat_mode === "unlimited" ? "selected" : ""}>Any time</option>
               </select>
             </label>
-            <label>Ask quantity
-              <select data-chore-field="quantity_enabled">
-                <option value="false" ${!chore.quantity_enabled ? "selected" : ""}>No</option>
-                <option value="true" ${chore.quantity_enabled ? "selected" : ""}>Yes</option>
-              </select>
-            </label>
           </div>
           <div class="chore-editor-line">
             <label>Requires approval
@@ -3108,7 +3003,6 @@ class SideQuestPanel extends HTMLElement {
                 <option value="false" ${chore.approval_required === false ? "selected" : ""}>No, award straight away</option>
               </select>
             </label>
-            <label>Quantity prompt<input data-chore-field="quantity_label" value="${this.escapeHtml(chore.quantity_label || "How many?")}"></label>
             <div class="chore-editor-actions">
               <button type="button" data-save-chore-row>${isNew ? "Add new task" : "Save"}</button>
               ${isNew ? "" : `<button type="button" class="danger" data-delete-chore-row="${this.escapeHtml(chore.id)}">Delete</button>`}
@@ -3132,8 +3026,8 @@ class SideQuestPanel extends HTMLElement {
       badges: field("badges")?.value || "",
       schedule: this.scheduleFromValue(field("schedule")?.value || "daily"),
       repeat_mode: field("repeat_mode")?.value || "once_per_day",
-      quantity_enabled: field("quantity_enabled")?.value === "true",
-      quantity_label: field("quantity_label")?.value.trim() || "How many?",
+      quantity_enabled: false,
+      quantity_label: "How many?",
       description: field("description")?.value.trim() || "",
       approval_required: field("approval_required")?.value !== "false",
       enabled: true,
@@ -3233,12 +3127,6 @@ class SideQuestPanel extends HTMLElement {
                 <option value="unlimited" ${quest.repeat_mode === "unlimited" ? "selected" : ""}>Any time</option>
               </select>
             </label>
-            <label>Ask quantity
-              <select data-anyone-field="quantity_enabled">
-                <option value="false" ${!quest.quantity_enabled ? "selected" : ""}>No</option>
-                <option value="true" ${quest.quantity_enabled ? "selected" : ""}>Yes</option>
-              </select>
-            </label>
           </div>
           <div class="chore-editor-line">
             <label>Requires approval
@@ -3247,7 +3135,6 @@ class SideQuestPanel extends HTMLElement {
                 <option value="false" ${quest.approval_required === false ? "selected" : ""}>No, award straight away</option>
               </select>
             </label>
-            <label>Quantity prompt<input data-anyone-field="quantity_label" value="${this.escapeHtml(quest.quantity_label || "How many?")}"></label>
             <div class="chore-editor-actions">
               <button type="button" data-save-anyone-row>${isNew ? "Add house quest" : "Save"}</button>
               ${isNew ? "" : `<button type="button" class="danger" data-delete-anyone-row="${this.escapeHtml(quest.id)}">Delete</button>`}
@@ -3271,8 +3158,8 @@ class SideQuestPanel extends HTMLElement {
       badges: field("badges")?.value || "team",
       schedule: this.scheduleFromValue(field("schedule")?.value || "daily"),
       repeat_mode: field("repeat_mode")?.value || "once_per_day",
-      quantity_enabled: field("quantity_enabled")?.value === "true",
-      quantity_label: field("quantity_label")?.value.trim() || "How many?",
+      quantity_enabled: false,
+      quantity_label: "How many?",
       description: field("description")?.value.trim() || "",
       approval_required: field("approval_required")?.value !== "false",
       enabled: true,

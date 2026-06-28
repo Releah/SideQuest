@@ -523,79 +523,6 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, SERVICE_DELETE_ANYONE_QUEST, delete_anyone_quest, schema=quest_id_schema)
     hass.services.async_register(
         DOMAIN,
-        SERVICE_UPSERT_GLOBAL_MISSION,
-        upsert_global_mission,
-        schema=vol.Schema(
-            {
-                vol.Optional("id"): cv.string,
-                vol.Required("name"): cv.string,
-                vol.Optional("description", default=""): cv.string,
-                vol.Optional("icon", default="mdi:rocket-launch"): cv.string,
-                vol.Optional("badges", default=[]): vol.Any([cv.string], cv.string),
-                vol.Optional("xp", default=5): vol.Coerce(int),
-                vol.Optional("tasks", default=[]): vol.Any([dict], cv.string),
-                vol.Optional("enabled", default=True): cv.boolean,
-                vol.Optional("done", default=False): cv.boolean,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_GLOBAL_MISSION,
-        delete_global_mission,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_COMPLETE_GLOBAL_MISSION,
-        complete_global_mission,
-        schema=vol.Schema(
-            {
-                vol.Required(ATTR_MISSION_ID): cv.string,
-                vol.Optional(ATTR_CHILD_ID): cv.string,
-            }
-        ),
-    )
-    mission_task_schema = vol.Schema(
-        {
-            vol.Required(ATTR_MISSION_ID): cv.string,
-            vol.Required(ATTR_TASK_ID): cv.string,
-            vol.Required(ATTR_CHILD_ID): cv.string,
-        }
-    )
-    hass.services.async_register(DOMAIN, SERVICE_CLAIM_GLOBAL_TASK, claim_global_task, schema=mission_task_schema)
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_APPROVE_GLOBAL_TASK,
-        approve_global_task,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string, vol.Required(ATTR_TASK_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DENY_GLOBAL_TASK,
-        deny_global_task,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string, vol.Required(ATTR_TASK_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SAVE_GLOBAL_TEMPLATE,
-        save_global_template,
-        schema=vol.Schema({vol.Required(ATTR_MISSION_ID): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LAUNCH_GLOBAL_TEMPLATE,
-        launch_global_template,
-        schema=vol.Schema({vol.Required("template_id"): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DELETE_GLOBAL_TEMPLATE,
-        delete_global_template,
-        schema=vol.Schema({vol.Required("template_id"): cv.string}),
-    )
-    hass.services.async_register(
-        DOMAIN,
         SERVICE_ADJUST_MONEY,
         adjust_money,
         schema=vol.Schema(
@@ -770,7 +697,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         config={
             "_panel_custom": {
                 "name": "chore-quest-panel",
-                "module_url": "/chore_quest_static/panel.js?v=20260628-house-quest-rooms",
+                "module_url": "/chore_quest_static/panel.js?v=20260628-no-global-missions",
                 "embed_iframe": False,
                 "trust_external_script": True,
             }

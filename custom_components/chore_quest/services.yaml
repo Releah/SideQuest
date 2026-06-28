@@ -105,12 +105,6 @@ upsert_chore:
             - once_per_day
             - once_per_week
             - unlimited
-    quantity_enabled:
-      selector:
-        boolean:
-    quantity_label:
-      selector:
-        text:
     schedule:
       selector:
         object:
@@ -206,12 +200,6 @@ upsert_anyone_quest:
             - once_per_day
             - once_per_week
             - unlimited
-    quantity_enabled:
-      selector:
-        boolean:
-    quantity_label:
-      selector:
-        text:
     schedule:
       selector:
         object:
@@ -239,112 +227,6 @@ upsert_house_room:
 delete_house_room:
   fields:
     room_id:
-      required: true
-      selector:
-        text:
-
-upsert_global_mission:
-  fields:
-    id:
-      selector:
-        text:
-    name:
-      required: true
-      selector:
-        text:
-    icon:
-      selector:
-        icon:
-    description:
-      selector:
-        text:
-    badges:
-      selector:
-        text:
-    xp:
-      selector:
-        number:
-          min: 0
-          max: 1000
-          step: 1
-    enabled:
-      selector:
-        boolean:
-    done:
-      selector:
-        boolean:
-
-delete_global_mission:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-
-complete_global_mission:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-    child_id:
-      selector:
-        text:
-
-claim_global_task:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-    task_id:
-      required: true
-      selector:
-        text:
-    child_id:
-      required: true
-      selector:
-        text:
-
-approve_global_task:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-    task_id:
-      required: true
-      selector:
-        text:
-
-deny_global_task:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-    task_id:
-      required: true
-      selector:
-        text:
-
-save_global_mission_template:
-  fields:
-    mission_id:
-      required: true
-      selector:
-        text:
-
-launch_global_mission_template:
-  fields:
-    template_id:
-      required: true
-      selector:
-        text:
-
-delete_global_mission_template:
-  fields:
-    template_id:
       required: true
       selector:
         text:
